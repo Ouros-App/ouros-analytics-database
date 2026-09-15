@@ -29,7 +29,6 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:github-ci
-          args: --accept-routes=true
 
       - name: Set up Python
         uses: actions/setup-python@v5
