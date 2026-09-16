@@ -118,6 +118,7 @@ jobs:
             echo "sonar.organization=${SONAR_ORGANIZATION:-$owner}"
             echo "sonar.projectKey=${SONAR_PROJECT_KEY:-${owner}_${repo}}"
             echo "sonar.sources=."
+            echo "sonar.python.coverage.reportPaths=coverage.xml"
             echo "sonar.exclusions=.git/**,.github/**,.venv/**,venv/**,__pycache__/**,dist/**,build/**"
             if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
               echo "sonar.branch.name=main"
@@ -140,6 +141,12 @@ jobs:
             cat /tmp/sonar-create.json
             exit 1
           fi
+
+      - name: Generate Python coverage
+        run: |
+          python -m pip install -r requirements.txt coverage==7.6.1
+          coverage run --source=scripts -m unittest discover -s tests -v
+          coverage xml
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@fd88b7d7ccbaefd23d8f36f73b59db7a3d246602 # v6
