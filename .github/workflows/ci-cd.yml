@@ -117,7 +117,8 @@ jobs:
           {
             echo "sonar.organization=${SONAR_ORGANIZATION:-$owner}"
             echo "sonar.projectKey=${SONAR_PROJECT_KEY:-${owner}_${repo}}"
-            echo "sonar.sources=."
+            echo "sonar.sources=scripts"
+            echo "sonar.tests=tests"
             echo "sonar.python.coverage.reportPaths=coverage.xml"
             echo "sonar.exclusions=.git/**,.github/**,.venv/**,venv/**,__pycache__/**,dist/**,build/**"
             if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
