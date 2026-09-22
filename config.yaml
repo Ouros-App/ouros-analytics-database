@@ -14,4 +14,10 @@ database:
   sql_path: sql
   version_table: controle_versoes
   version_schema_file: versionamento.sql
-  execution_order: []
+  execution_order:
+    - file: analytics_schema.sql
+      mode: on_change
+    - file: sync_state.sql
+      mode: on_change
+    - file: analytics_readonly_user.sql
+      mode: on_change
