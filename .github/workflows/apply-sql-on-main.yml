@@ -1,4 +1,4 @@
-name: Apply SQL On Main
+name: Apply SQL And Deploy Homelab
 
 on:
   push:
@@ -10,18 +10,19 @@ permissions:
   id-token: write
 
 concurrency:
-  group: apply-sql-main
+  group: analytics-homelab-main
   cancel-in-progress: false
 
 jobs:
-  apply:
-    name: apply
+  deploy:
+    name: deploy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Connect to homelab through Tailscale
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4
@@ -57,7 +58,8 @@ jobs:
               except OSError as exc:
                   if attempt == attempts:
                       raise SystemExit(
-                          f"PostgreSQL unreachable on {host}:{port} after {attempts} attempts: {exc}"
+                          f"PostgreSQL unreachable on {host}:{port} "
+                          f"after {attempts} attempts: {exc}"
                       ) from exc
                   delay = attempt * 2
                   print(
@@ -67,7 +69,7 @@ jobs:
                   time.sleep(delay)
           PY
 
-      - name: Install dependencies
+      - name: Install migration dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
@@ -84,3 +86,47 @@ jobs:
           POSTGRES_ROOT_PASSWORD: ${{ secrets.POSTGRES_ROOT_PASSWORD }}
           GITHUB_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: python scripts/apply_sql.py
+
+      - name: Configure SSH
+        env:
+          HOMELAB_SSH_HOST: ${{ secrets.POSTGRES_HOST }}
+          HOMELAB_SSH_PRIVATE_KEY: ${{ secrets.HOMELAB_SSH_PRIVATE_KEY }}
+          HOMELAB_SSH_HOST_FINGERPRINT: ${{ secrets.HOMELAB_SSH_HOST_FINGERPRINT }}
+        run: |
+          test -n "$HOMELAB_SSH_HOST"
+          test -n "$HOMELAB_SSH_PRIVATE_KEY"
+          test -n "$HOMELAB_SSH_HOST_FINGERPRINT"
+
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$HOMELAB_SSH_PRIVATE_KEY" > ~/.ssh/ouros-analytics-deploy
+          chmod 600 ~/.ssh/ouros-analytics-deploy
+
+          scanned_key="$(ssh-keyscan -T 10 -t ed25519 "$HOMELAB_SSH_HOST" 2>/dev/null)"
+          test -n "$scanned_key"
+          actual_fingerprint="$(
+            printf '%s\n' "$scanned_key" |
+              ssh-keygen -lf - -E sha256 |
+              awk 'NR == 1 {print $2}'
+          )"
+
+          if [[ "$actual_fingerprint" != "$HOMELAB_SSH_HOST_FINGERPRINT" ]]; then
+            echo "Fingerprint SSH do homelab nao confere." >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$scanned_key" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy exact push to homelab
+        env:
+          HOMELAB_SSH_HOST: ${{ secrets.POSTGRES_HOST }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          ssh \
+            -i ~/.ssh/ouros-analytics-deploy \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "vlad-admin@$HOMELAB_SSH_HOST" \
+            "bash -s -- '$DEPLOY_SHA'" < scripts/deploy_homelab.sh
