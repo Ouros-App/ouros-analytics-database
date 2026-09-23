@@ -91,23 +91,31 @@ jobs:
         env:
           HOMELAB_SSH_HOST: ${{ secrets.POSTGRES_HOST }}
           HOMELAB_SSH_PRIVATE_KEY: ${{ secrets.HOMELAB_SSH_PRIVATE_KEY }}
-          HOMELAB_SSH_KNOWN_HOSTS: ${{ secrets.HOMELAB_SSH_KNOWN_HOSTS }}
+          HOMELAB_SSH_HOST_FINGERPRINT: ${{ secrets.HOMELAB_SSH_HOST_FINGERPRINT }}
         run: |
           test -n "$HOMELAB_SSH_HOST"
           test -n "$HOMELAB_SSH_PRIVATE_KEY"
-          test -n "$HOMELAB_SSH_KNOWN_HOSTS"
+          test -n "$HOMELAB_SSH_HOST_FINGERPRINT"
 
           install -d -m 700 ~/.ssh
           printf '%s\n' "$HOMELAB_SSH_PRIVATE_KEY" > ~/.ssh/ouros-analytics-deploy
           chmod 600 ~/.ssh/ouros-analytics-deploy
 
-          printf '%s\n' "$HOMELAB_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+          scanned_key="$(ssh-keyscan -T 10 -t ed25519 "$HOMELAB_SSH_HOST" 2>/dev/null)"
+          test -n "$scanned_key"
+          actual_fingerprint="$(
+            printf '%s\n' "$scanned_key" |
+              ssh-keygen -lf - -E sha256 |
+              awk 'NR == 1 {print $2}'
+          )"
 
-          if ! ssh-keygen -F "$HOMELAB_SSH_HOST" -f ~/.ssh/known_hosts >/dev/null; then
-            echo "known_hosts nao contem a host key verificada de $HOMELAB_SSH_HOST." >&2
+          if [[ "$actual_fingerprint" != "$HOMELAB_SSH_HOST_FINGERPRINT" ]]; then
+            echo "Fingerprint SSH do homelab nao confere." >&2
             exit 1
           fi
+
+          printf '%s\n' "$scanned_key" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy exact push to homelab
         env:
