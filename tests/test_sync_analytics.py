@@ -208,6 +208,10 @@ class SyncAnalyticsTest(unittest.TestCase):
             side_effect=[source, target],
         ), patch.object(
             sync_analytics,
+            "upsert",
+            return_value=0,
+        ), patch.object(
+            sync_analytics,
             "refresh_derived_rows",
             return_value={},
         ), patch.object(
