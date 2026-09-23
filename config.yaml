@@ -21,3 +21,5 @@ database:
       mode: on_change
     - file: analytics_readonly_user.sql
       mode: on_change
+    - file: analytics_sync_writer.sql
+      mode: on_change

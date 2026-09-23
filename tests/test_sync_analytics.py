@@ -25,7 +25,7 @@ class FakeCursor:
             self.pending = "last_sync"
         elif self.role == "source" and query == "SELECT CURRENT_TIMESTAMP":
             self.pending = "sync_end"
-        elif self.role == "source":
+        elif query.lstrip().startswith("SELECT") or self.role == "source":
             self.pending = "rows"
 
     def fetchone(self):
@@ -76,7 +76,119 @@ class SyncAnalyticsTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "DATABASE_URL"):
                 sync_analytics.env("DATABASE_URL")
 
-    def test_main_upserts_and_commits_watermark(self) -> None:
+    def test_delete_rows_uses_composite_key(self) -> None:
+        cursor = object()
+        calls = []
+
+        with patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, rows, page_size: calls.append(
+                (query, rows, page_size)
+            ),
+        ):
+            deleted = sync_analytics.delete_rows(
+                cursor,
+                "analytics.fact_goal",
+                ("goal_scope", "goal_id"),
+                [("state", 7)],
+            )
+
+        self.assertEqual(deleted, 1)
+        query, rows, page_size = calls[0]
+        self.assertIn("DELETE FROM analytics.fact_goal AS target", query)
+        self.assertIn("target.goal_scope = stale.goal_scope", query)
+        self.assertIn("target.goal_id = stale.goal_id", query)
+        self.assertEqual(rows, [("state", 7)])
+        self.assertEqual(page_size, 1000)
+
+    def test_delete_rows_empty_keys_is_noop(self) -> None:
+        with patch.object(sync_analytics, "execute_values") as execute:
+            deleted = sync_analytics.delete_rows(
+                object(),
+                "analytics.dim_enterprise",
+                ("enterprise_id",),
+                [],
+            )
+
+        self.assertEqual(deleted, 0)
+        execute.assert_not_called()
+
+    def test_refresh_derived_rows_upserts_snapshot(self) -> None:
+        source = FakeCursor("source", [[(1, "row")]])
+        target = FakeCursor("target")
+        upsert_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "REFRESH_STEPS",
+            [
+                (
+                    "derived",
+                    "SELECT 1",
+                    ("id", "value"),
+                    ("id",),
+                )
+            ],
+        ), patch.object(
+            sync_analytics,
+            "upsert",
+            side_effect=lambda _cur, table, columns, conflict, rows: (
+                upsert_calls.append((table, columns, conflict, rows)) or len(rows)
+            ),
+        ):
+            counts = sync_analytics.refresh_derived_rows(source, target)
+
+        self.assertEqual(counts, {"refreshed_derived": 1})
+        self.assertEqual(
+            upsert_calls,
+            [
+                (
+                    "analytics.derived",
+                    ("id", "value"),
+                    ("id",),
+                    [(1, "row")],
+                )
+            ],
+        )
+
+    def test_reconcile_deleted_rows_removes_only_stale_keys(self) -> None:
+        source = FakeCursor("source", [[(1,)]])
+        target = FakeCursor("target", [[(1,), (2,)]])
+        delete_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "RECONCILIATIONS",
+            [
+                (
+                    "dim_enterprise",
+                    ("enterprise_id",),
+                    "SELECT id FROM public.enterprises",
+                )
+            ],
+        ), patch.object(
+            sync_analytics,
+            "delete_rows",
+            side_effect=lambda _cur, table, columns, keys: (
+                delete_calls.append((table, columns, set(keys))) or len(keys)
+            ),
+        ):
+            counts = sync_analytics.reconcile_deleted_rows(source, target)
+
+        self.assertEqual(counts["deleted_dim_enterprise"], 1)
+        self.assertEqual(
+            delete_calls,
+            [
+                (
+                    "analytics.dim_enterprise",
+                    ("enterprise_id",),
+                    {(2,)},
+                )
+            ],
+        )
+
+    def test_main_upserts_refreshes_reconciles_and_commits_watermark(self) -> None:
         source = FakeConnection(
             "source",
             [[(1, "Empresa", "SP", "Sao Paulo")], [], [], [], [], [], []],
@@ -91,18 +203,46 @@ class SyncAnalyticsTest(unittest.TestCase):
                 "ANALYTICS_SYNC_DATABASE_URL": "postgresql://target",
             },
             clear=True,
-        ), patch.object(sync_analytics.psycopg2, "connect", side_effect=[source, target]), patch.object(
-            sync_analytics, "execute_values", side_effect=lambda _cur, query, rows, page_size: execute_calls.append(query)
-        ):
+        ), patch.object(
+            sync_analytics.psycopg2,
+            "connect",
+            side_effect=[source, target],
+        ), patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, rows, page_size: execute_calls.append(
+                query
+            ),
+        ), patch.object(
+            sync_analytics,
+            "refresh_derived_rows",
+            return_value={"refreshed_fact_tip_feedback": 0},
+        ) as refresh, patch.object(
+            sync_analytics,
+            "reconcile_deleted_rows",
+            return_value={"deleted_fact_tip_feedback": 0},
+        ) as reconcile:
             sync_analytics.main()
 
         self.assertTrue(target.committed)
         self.assertTrue(source.committed)
-        self.assertTrue(any("analytics.dim_enterprise" in query for query in execute_calls))
-        self.assertTrue(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
+        self.assertTrue(
+            any("analytics.dim_enterprise" in query for query in execute_calls)
+        )
+        refresh.assert_called_once()
+        reconcile.assert_called_once()
+        self.assertTrue(
+            any(
+                "UPDATE analytics.sync_state" in query
+                for query in target.cursor_obj.executed
+            )
+        )
 
-    def test_failed_step_rolls_back_without_advancing_watermark(self) -> None:
-        source = FakeConnection("source", [[(1, "Empresa", "SP", "Sao Paulo")]])
+    def test_failed_reconciliation_rolls_back_without_advancing_watermark(self) -> None:
+        source = FakeConnection(
+            "source",
+            [[(1, "Empresa", "SP", "Sao Paulo")], [], [], [], [], [], []],
+        )
         target = FakeConnection("target")
 
         with patch.dict(
@@ -112,15 +252,34 @@ class SyncAnalyticsTest(unittest.TestCase):
                 "ANALYTICS_SYNC_DATABASE_URL": "postgresql://target",
             },
             clear=True,
-        ), patch.object(sync_analytics.psycopg2, "connect", side_effect=[source, target]), patch.object(
-            sync_analytics, "upsert", side_effect=RuntimeError("falha")
+        ), patch.object(
+            sync_analytics.psycopg2,
+            "connect",
+            side_effect=[source, target],
+        ), patch.object(
+            sync_analytics,
+            "upsert",
+            return_value=0,
+        ), patch.object(
+            sync_analytics,
+            "refresh_derived_rows",
+            return_value={},
+        ), patch.object(
+            sync_analytics,
+            "reconcile_deleted_rows",
+            side_effect=RuntimeError("falha no delete"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "falha"):
+            with self.assertRaisesRegex(RuntimeError, "falha no delete"):
                 sync_analytics.main()
 
         self.assertTrue(target.rolled_back)
         self.assertFalse(target.committed)
-        self.assertFalse(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
+        self.assertFalse(
+            any(
+                "UPDATE analytics.sync_state" in query
+                for query in target.cursor_obj.executed
+            )
+        )
 
 
 if __name__ == "__main__":
