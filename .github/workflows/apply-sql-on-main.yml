@@ -91,29 +91,28 @@ jobs:
         env:
           HOMELAB_SSH_HOST: ${{ secrets.POSTGRES_HOST }}
           HOMELAB_SSH_PRIVATE_KEY: ${{ secrets.HOMELAB_SSH_PRIVATE_KEY }}
+          HOMELAB_SSH_KNOWN_HOSTS: ${{ secrets.HOMELAB_SSH_KNOWN_HOSTS }}
         run: |
           test -n "$HOMELAB_SSH_HOST"
           test -n "$HOMELAB_SSH_PRIVATE_KEY"
+          test -n "$HOMELAB_SSH_KNOWN_HOSTS"
 
           install -d -m 700 ~/.ssh
           printf '%s\n' "$HOMELAB_SSH_PRIVATE_KEY" > ~/.ssh/ouros-analytics-deploy
           chmod 600 ~/.ssh/ouros-analytics-deploy
 
-          for attempt in 1 2 3 4 5; do
-            if ssh-keyscan -T 5 -H "$HOMELAB_SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null; then
-              break
-            fi
-            if [[ "$attempt" == "5" ]]; then
-              echo "Nao foi possivel obter a host key SSH do homelab." >&2
-              exit 1
-            fi
-            sleep "$((attempt * 2))"
-          done
+          printf '%s\n' "$HOMELAB_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy code to homelab
+          if ! ssh-keygen -F "$HOMELAB_SSH_HOST" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "known_hosts nao contem a host key verificada de $HOMELAB_SSH_HOST." >&2
+            exit 1
+          fi
+
+      - name: Deploy exact push to homelab
         env:
           HOMELAB_SSH_HOST: ${{ secrets.POSTGRES_HOST }}
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
           ssh \
             -i ~/.ssh/ouros-analytics-deploy \
@@ -122,4 +121,4 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "vlad-admin@$HOMELAB_SSH_HOST" \
-            'bash -s' < scripts/deploy_homelab.sh
+            "bash -s -- '$DEPLOY_SHA'" < scripts/deploy_homelab.sh
