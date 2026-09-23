@@ -102,6 +102,56 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertEqual(rows, [("state", 7)])
         self.assertEqual(page_size, 1000)
 
+    def test_delete_rows_empty_keys_is_noop(self) -> None:
+        with patch.object(sync_analytics, "execute_values") as execute:
+            deleted = sync_analytics.delete_rows(
+                object(),
+                "analytics.dim_enterprise",
+                ("enterprise_id",),
+                [],
+            )
+
+        self.assertEqual(deleted, 0)
+        execute.assert_not_called()
+
+    def test_refresh_derived_rows_upserts_snapshot(self) -> None:
+        source = FakeCursor("source", [[(1, "row")]])
+        target = FakeCursor("target")
+        upsert_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "REFRESH_STEPS",
+            [
+                (
+                    "derived",
+                    "SELECT 1",
+                    ("id", "value"),
+                    ("id",),
+                )
+            ],
+        ), patch.object(
+            sync_analytics,
+            "upsert",
+            side_effect=lambda _cur, table, columns, conflict, rows: (
+                upsert_calls.append((table, columns, conflict, rows)) or len(rows)
+            ),
+        ):
+            counts = sync_analytics.refresh_derived_rows(source, target)
+
+        self.assertEqual(counts, {"refreshed_derived": 1})
+        self.assertEqual(
+            upsert_calls,
+            [
+                (
+                    "analytics.derived",
+                    ("id", "value"),
+                    ("id",),
+                    [(1, "row")],
+                )
+            ],
+        )
+
     def test_reconcile_deleted_rows_removes_only_stale_keys(self) -> None:
         source = FakeCursor("source", [[(1,)]])
         target = FakeCursor("target", [[(1,), (2,)]])
