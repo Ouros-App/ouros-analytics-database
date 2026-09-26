@@ -46,28 +46,38 @@ dados pessoais.
 
 O role `analytics_ro` é criado para APIs, dashboards e ferramentas de análise.
 Ele possui apenas `USAGE` no schema `analytics` e `SELECT` nas tabelas e views,
-com transações somente leitura e sem privilégios administrativos. A senha não
-é versionada e deve ser configurada no ambiente de execução pelo gerenciador
-de secrets.
+com transações somente leitura e sem privilégios administrativos.
+
+O role `analytics_sync_rw` é usado exclusivamente pelo sincronizador. Ele
+recebe `SELECT`, `INSERT`, `UPDATE` e `DELETE` nas tabelas do schema
+`analytics`, sem privilégios administrativos ou acesso a sequences. As senhas
+não são versionadas e devem ser configuradas fora do repositório.
 
 ## Sincronização incremental
 
-O script `scripts/sync_analytics.py` lê somente registros com `updated_at` no
-intervalo entre o último watermark e o início da execução. Ele usa o role
-`analytics_sync_ro` na origem e uma credencial de escrita separada no destino,
-aplica joins/agregações/normalizações e grava com UPSERT. O watermark fica em
-`analytics.sync_state` e só é atualizado no mesmo commit dos dados; qualquer
-falha faz rollback e mantém o `last_sync` anterior.
+O script `scripts/sync_analytics.py` lê registros alterados por `updated_at`
+entre o último watermark e o início da execução. Ele usa o role
+`analytics_sync_ro` na origem e `analytics_sync_rw` no destino, aplica
+joins/agregações/normalizações e grava com UPSERT.
 
-Configure `PRODUCTION_DATABASE_URL` e `ANALYTICS_SYNC_DATABASE_URL` no ambiente
-e execute:
+Deletes também são propagados. Ao fim de cada execução, o sincronizador compara
+as chaves válidas da origem com as chaves presentes no Analytics e remove linhas
+órfãs em ordem segura para as foreign keys. As agregações de consumo mensal e o
+feedback de dicas são recalculados antes da reconciliação, evitando valores
+fantasmas quando um registro que participa de uma soma ou categoria é apagado.
+
+O watermark fica em `analytics.sync_state` e só é atualizado no mesmo commit
+dos UPSERTs, refreshes e deletes. Qualquer falha faz rollback e mantém o
+`last_sync` anterior.
+
+Configure `PRODUCTION_DATABASE_URL` e `ANALYTICS_SYNC_DATABASE_URL` no
+ambiente e execute:
 
 ```bash
 python scripts/sync_analytics.py
 ```
 
-Para cron, por exemplo, use `*/5 * * * * cd /caminho/ouros-analytics-database &&
-python scripts/sync_analytics.py >> /var/log/ouros-analytics-sync.log 2>&1`.
+Para execução recorrente, use um scheduler do host, como um `systemd timer`.
 
 ## Uso
 
