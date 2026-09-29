@@ -22,7 +22,7 @@ feedback de dicas, além da view `analytics.v_farm_dashboard`.
 Foram utilizados `enterprises`, `addresses`, `farms`, `lots`,
 `water_registries`, `energy_registries`, `plans`, `enterprise_plans`,
 `payments`, `individual_goals`, `state_goals`, `regions_goals`,
-`farm_goals`, `state_goal_regions`, `tips`, `categories`,
+`farm_goals`, `state_goal_regions`, `tips`, `farms_tips`, `categories`,
 `tip_categories` e `reviews`.
 
 Os joins empresa-endereço-fazenda, empresa-plano-pagamento, fazenda-lote,
@@ -58,6 +58,12 @@ intervalo entre o último watermark e o início da execução. Ele usa o role
 aplica joins/agregações/normalizações e grava com UPSERT. O watermark fica em
 `analytics.sync_state` e só é atualizado no mesmo commit dos dados; qualquer
 falha faz rollback e mantém o `last_sync` anterior.
+
+O contrato da origem exige acesso de leitura a todas as tabelas usadas pelos
+joins, inclusive `public.farms_tips`. A relação entre dica e fazenda é
+normalizada nessa tabela; `public.tips` não possui `id_farm`. Feedbacks são
+identificados no destino pela chave composta `(review_id, farm_id)`, permitindo
+que a mesma dica esteja associada a mais de uma fazenda sem colisões no UPSERT.
 
 Configure `PRODUCTION_DATABASE_URL` e `ANALYTICS_SYNC_DATABASE_URL` no ambiente
 e execute:
