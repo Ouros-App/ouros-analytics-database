@@ -102,17 +102,64 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertTrue(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
 
 
-    def test_tip_feedback_uses_normalized_farm_relation(self) -> None:
-        name, query, _columns, conflict = next(
-            step for step in sync_analytics.STEPS if step[0] == "fact_tip_feedback"
-        )
+    def test_tip_feedback_snapshot_uses_normalized_farm_relation(self) -> None:
+        """The snapshot must follow the normalized tip-to-farm relationship."""
+        query = sync_analytics.TIP_FEEDBACK_SNAPSHOT_QUERY
 
-        self.assertEqual(name, "fact_tip_feedback")
         self.assertIn("JOIN public.farms_tips ft ON ft.id_tip = t.id", query)
         self.assertIn("JOIN public.farms f ON f.id = ft.id_farm", query)
-        self.assertIn("f.updated_at > b.last_sync", query)
         self.assertNotIn("JOIN public.farms f ON f.id = t.id_farm", query)
-        self.assertEqual(conflict, ("review_id", "farm_id"))
+        self.assertNotIn("updated_at", query)
+        self.assertEqual(
+            sync_analytics.TIP_FEEDBACK_CONFLICT,
+            ("review_id", "farm_id"),
+        )
+
+    def test_tip_feedback_snapshot_reconciles_removed_links(self) -> None:
+        """Current source keys are used to delete stale destination associations."""
+        source = FakeCursor(
+            "source",
+            [[(7, 10, 3, "Farm", 5, ["sustentabilidade"])]],
+        )
+        target = FakeCursor("target")
+        delete_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "upsert",
+            return_value=1,
+        ), patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, rows, page_size: delete_calls.append(
+                (query, rows, page_size)
+            ),
+        ):
+            count = sync_analytics.sync_tip_feedback_snapshot(source, target)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(delete_calls), 1)
+        query, rows, page_size = delete_calls[0]
+        self.assertIn("DELETE FROM analytics.fact_tip_feedback", query)
+        self.assertIn("NOT EXISTS", query)
+        self.assertEqual(rows, [(7, 3)])
+        self.assertEqual(page_size, 1000)
+
+    def test_tip_feedback_snapshot_empty_source_clears_destination(self) -> None:
+        """An empty source snapshot removes all stale feedback rows."""
+        source = FakeCursor("source", [[]])
+        target = FakeCursor("target")
+
+        with patch.object(sync_analytics, "upsert", return_value=0):
+            count = sync_analytics.sync_tip_feedback_snapshot(source, target)
+
+        self.assertEqual(count, 0)
+        self.assertTrue(
+            any(
+                query == "DELETE FROM analytics.fact_tip_feedback"
+                for query in target.executed
+            )
+        )
 
     def test_failed_step_rolls_back_without_advancing_watermark(self) -> None:
         source = FakeConnection("source", [[(1, "Empresa", "SP", "Sao Paulo")]])
