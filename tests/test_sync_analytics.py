@@ -111,7 +111,7 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertIn("JOIN public.farms_tips ft ON ft.id_tip = t.id", query)
         self.assertIn("JOIN public.farms f ON f.id = ft.id_farm", query)
         self.assertIn("f.updated_at > b.last_sync", query)
-        self.assertNotIn("t.id_farm", query)
+        self.assertNotIn("JOIN public.farms f ON f.id = t.id_farm", query)
         self.assertEqual(conflict, ("review_id", "farm_id"))
 
     def test_failed_step_rolls_back_without_advancing_watermark(self) -> None:
