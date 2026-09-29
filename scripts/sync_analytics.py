@@ -194,7 +194,7 @@ STEPS = [
         "fact_tip_feedback",
         """
         WITH bounds AS (SELECT %s::timestamptz AS last_sync, %s::timestamptz AS sync_end)
-        SELECT r.id, t.id, t.id_farm, btrim(f.name), r.rating,
+        SELECT r.id, t.id, ft.id_farm, btrim(f.name), r.rating,
                COALESCE(
                    array_agg(DISTINCT lower(btrim(c.category)) ORDER BY lower(btrim(c.category)))
                        FILTER (WHERE c.id IS NOT NULL),
@@ -202,18 +202,20 @@ STEPS = [
                )
         FROM public.reviews r
         JOIN public.tips t ON t.id = r.id_tip
-        JOIN public.farms f ON f.id = t.id_farm
+        JOIN public.farms_tips ft ON ft.id_tip = t.id
+        JOIN public.farms f ON f.id = ft.id_farm
         LEFT JOIN public.tip_categories tc ON tc.id_tip = t.id
         LEFT JOIN public.categories c ON c.id = tc.id_category
         CROSS JOIN bounds b
         WHERE (r.updated_at > b.last_sync AND r.updated_at <= b.sync_end)
            OR (t.updated_at > b.last_sync AND t.updated_at <= b.sync_end)
+           OR (f.updated_at > b.last_sync AND f.updated_at <= b.sync_end)
            OR (tc.updated_at > b.last_sync AND tc.updated_at <= b.sync_end)
            OR (c.updated_at > b.last_sync AND c.updated_at <= b.sync_end)
-        GROUP BY r.id, t.id, t.id_farm, f.name, r.rating
+        GROUP BY r.id, t.id, ft.id_farm, f.name, r.rating
         """,
         ("review_id", "tip_id", "farm_id", "farm_name", "rating", "categories"),
-        ("review_id",),
+        ("review_id", "farm_id"),
     ),
 ]
 
