@@ -233,16 +233,36 @@ def sync_tip_feedback_snapshot(source_cur, target_cur) -> int:
         target_cur.execute("DELETE FROM analytics.fact_tip_feedback")
         return upserted
 
-    delete_stale = """
+    target_cur.execute(
+        """
+        CREATE TEMP TABLE tip_feedback_current_keys (
+            review_id INTEGER NOT NULL,
+            farm_id INTEGER NOT NULL,
+            PRIMARY KEY (review_id, farm_id)
+        ) ON COMMIT DROP
+        """
+    )
+    execute_values(
+        target_cur,
+        """
+        INSERT INTO tip_feedback_current_keys (review_id, farm_id)
+        VALUES %s
+        ON CONFLICT DO NOTHING
+        """,
+        current_keys,
+        page_size=1000,
+    )
+    target_cur.execute(
+        """
         DELETE FROM analytics.fact_tip_feedback AS target
         WHERE NOT EXISTS (
             SELECT 1
-            FROM (VALUES %s) AS source_keys (review_id, farm_id)
+            FROM tip_feedback_current_keys AS source_keys
             WHERE source_keys.review_id = target.review_id
               AND source_keys.farm_id = target.farm_id
         )
-    """
-    execute_values(target_cur, delete_stale, current_keys, page_size=1000)
+        """
+    )
     return upserted
 
 
