@@ -101,6 +101,19 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertTrue(any("analytics.dim_enterprise" in query for query in execute_calls))
         self.assertTrue(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
 
+
+    def test_tip_feedback_uses_normalized_farm_relation(self) -> None:
+        name, query, _columns, conflict = next(
+            step for step in sync_analytics.STEPS if step[0] == "fact_tip_feedback"
+        )
+
+        self.assertEqual(name, "fact_tip_feedback")
+        self.assertIn("JOIN public.farms_tips ft ON ft.id_tip = t.id", query)
+        self.assertIn("JOIN public.farms f ON f.id = ft.id_farm", query)
+        self.assertIn("f.updated_at > b.last_sync", query)
+        self.assertNotIn("t.id_farm", query)
+        self.assertEqual(conflict, ("review_id", "farm_id"))
+
     def test_failed_step_rolls_back_without_advancing_watermark(self) -> None:
         source = FakeConnection("source", [[(1, "Empresa", "SP", "Sao Paulo")]])
         target = FakeConnection("target")
