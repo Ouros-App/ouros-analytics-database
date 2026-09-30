@@ -9,6 +9,7 @@ SYNC_NAME = "production_to_analytics"
 
 
 def env(name: str) -> str:
+    """Return a required environment variable or fail fast."""
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Variavel de ambiente obrigatoria ausente: {name}")
@@ -16,6 +17,7 @@ def env(name: str) -> str:
 
 
 def upsert(cur, table: str, columns: tuple[str, ...], conflict: tuple[str, ...], rows: list[tuple]) -> int:
+    """Upsert rows into an analytics table and return the processed row count."""
     if not rows:
         return 0
     names = ", ".join(columns)
@@ -190,35 +192,82 @@ STEPS = [
         ),
         ("goal_scope", "goal_id"),
     ),
-    (
-        "fact_tip_feedback",
-        """
-        WITH bounds AS (SELECT %s::timestamptz AS last_sync, %s::timestamptz AS sync_end)
-        SELECT r.id, t.id, t.id_farm, btrim(f.name), r.rating,
-               COALESCE(
-                   array_agg(DISTINCT lower(btrim(c.category)) ORDER BY lower(btrim(c.category)))
-                       FILTER (WHERE c.id IS NOT NULL),
-                   ARRAY[]::text[]
-               )
-        FROM public.reviews r
-        JOIN public.tips t ON t.id = r.id_tip
-        JOIN public.farms f ON f.id = t.id_farm
-        LEFT JOIN public.tip_categories tc ON tc.id_tip = t.id
-        LEFT JOIN public.categories c ON c.id = tc.id_category
-        CROSS JOIN bounds b
-        WHERE (r.updated_at > b.last_sync AND r.updated_at <= b.sync_end)
-           OR (t.updated_at > b.last_sync AND t.updated_at <= b.sync_end)
-           OR (tc.updated_at > b.last_sync AND tc.updated_at <= b.sync_end)
-           OR (c.updated_at > b.last_sync AND c.updated_at <= b.sync_end)
-        GROUP BY r.id, t.id, t.id_farm, f.name, r.rating
-        """,
-        ("review_id", "tip_id", "farm_id", "farm_name", "rating", "categories"),
-        ("review_id",),
-    ),
 ]
 
 
+TIP_FEEDBACK_SNAPSHOT_QUERY = """
+    SELECT r.id, t.id, ft.id_farm, btrim(f.name), r.rating,
+           COALESCE(
+               array_agg(DISTINCT lower(btrim(c.category)) ORDER BY lower(btrim(c.category)))
+                   FILTER (WHERE c.id IS NOT NULL),
+               ARRAY[]::text[]
+           )
+    FROM public.reviews r
+    JOIN public.tips t ON t.id = r.id_tip
+    JOIN public.farms_tips ft ON ft.id_tip = t.id
+    JOIN public.farms f ON f.id = ft.id_farm
+    LEFT JOIN public.tip_categories tc ON tc.id_tip = t.id
+    LEFT JOIN public.categories c ON c.id = tc.id_category
+    GROUP BY r.id, t.id, ft.id_farm, f.name, r.rating
+"""
+TIP_FEEDBACK_COLUMNS = (
+    "review_id", "tip_id", "farm_id", "farm_name", "rating", "categories",
+)
+TIP_FEEDBACK_CONFLICT = ("review_id", "farm_id")
+
+
+def sync_tip_feedback_snapshot(source_cur, target_cur) -> int:
+    """Fully refresh tip feedback so relation inserts and removals cannot be missed."""
+    source_cur.execute(TIP_FEEDBACK_SNAPSHOT_QUERY)
+    rows = source_cur.fetchall()
+    upserted = upsert(
+        target_cur,
+        "analytics.fact_tip_feedback",
+        TIP_FEEDBACK_COLUMNS,
+        TIP_FEEDBACK_CONFLICT,
+        rows,
+    )
+
+    current_keys = [(row[0], row[2]) for row in rows]
+    if not current_keys:
+        target_cur.execute("DELETE FROM analytics.fact_tip_feedback")
+        return upserted
+
+    target_cur.execute(
+        """
+        CREATE TEMP TABLE tip_feedback_current_keys (
+            review_id INTEGER NOT NULL,
+            farm_id INTEGER NOT NULL,
+            PRIMARY KEY (review_id, farm_id)
+        ) ON COMMIT DROP
+        """
+    )
+    execute_values(
+        target_cur,
+        """
+        INSERT INTO tip_feedback_current_keys (review_id, farm_id)
+        VALUES %s
+        ON CONFLICT DO NOTHING
+        """,
+        current_keys,
+        page_size=1000,
+    )
+    target_cur.execute(
+        """
+        DELETE FROM analytics.fact_tip_feedback AS target
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM tip_feedback_current_keys AS source_keys
+            WHERE source_keys.review_id = target.review_id
+              AND source_keys.farm_id = target.farm_id
+        )
+        """
+    )
+    return upserted
+
+
 def main() -> None:
+    """Run one atomic production-to-analytics synchronization cycle."""
     source = psycopg2.connect(env("PRODUCTION_DATABASE_URL"))
     target = psycopg2.connect(env("ANALYTICS_SYNC_DATABASE_URL"))
     counts = {}
@@ -240,6 +289,13 @@ def main() -> None:
                 for name, query, columns, conflict in STEPS:
                     source_cur.execute(query, (last_sync, sync_end))
                     counts[name] = upsert(target_cur, f"analytics.{name}", columns, conflict, source_cur.fetchall())
+
+                # farms_tips has no updated_at in production, so this derived fact
+                # is reconciled from a complete snapshot on every cycle.
+                counts["fact_tip_feedback"] = sync_tip_feedback_snapshot(
+                    source_cur, target_cur
+                )
+
                 target_cur.execute(
                     "UPDATE analytics.sync_state SET last_sync = %s, updated_at = CURRENT_TIMESTAMP "
                     "WHERE sync_name = %s",

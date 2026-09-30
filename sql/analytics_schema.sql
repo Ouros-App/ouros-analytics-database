@@ -108,12 +108,13 @@ CREATE TABLE IF NOT EXISTS analytics.fact_goal (
 );
 
 CREATE TABLE IF NOT EXISTS analytics.fact_tip_feedback (
-    review_id INTEGER PRIMARY KEY,
+    review_id INTEGER NOT NULL,
     tip_id INTEGER NOT NULL,
     farm_id INTEGER NOT NULL REFERENCES analytics.dim_farm(farm_id),
     farm_name TEXT NOT NULL,
     rating INTEGER NOT NULL CHECK (rating BETWEEN 0 AND 5),
-    categories TEXT[] NOT NULL DEFAULT '{}'
+    categories TEXT[] NOT NULL DEFAULT '{}',
+    PRIMARY KEY (review_id, farm_id)
 );
 
 CREATE INDEX IF NOT EXISTS fact_lot_farm_date_idx

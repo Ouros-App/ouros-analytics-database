@@ -101,6 +101,113 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertTrue(any("analytics.dim_enterprise" in query for query in execute_calls))
         self.assertTrue(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
 
+
+    def test_tip_feedback_snapshot_uses_normalized_farm_relation(self) -> None:
+        """The snapshot must follow the normalized tip-to-farm relationship."""
+        query = sync_analytics.TIP_FEEDBACK_SNAPSHOT_QUERY
+
+        self.assertIn("JOIN public.farms_tips ft ON ft.id_tip = t.id", query)
+        self.assertIn("JOIN public.farms f ON f.id = ft.id_farm", query)
+        self.assertNotIn("JOIN public.farms f ON f.id = t.id_farm", query)
+        self.assertNotIn("updated_at", query)
+        self.assertEqual(
+            sync_analytics.TIP_FEEDBACK_CONFLICT,
+            ("review_id", "farm_id"),
+        )
+
+    def test_tip_feedback_snapshot_reconciles_removed_links(self) -> None:
+        """Current source keys are staged before one stale-row reconciliation."""
+        source = FakeCursor(
+            "source",
+            [[(7, 10, 3, "Farm", 5, ["sustentabilidade"])]],
+        )
+        target = FakeCursor("target")
+        insert_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "upsert",
+            return_value=1,
+        ), patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, rows, page_size: insert_calls.append(
+                (query, rows, page_size)
+            ),
+        ):
+            count = sync_analytics.sync_tip_feedback_snapshot(source, target)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(insert_calls), 1)
+        query, rows, page_size = insert_calls[0]
+        self.assertIn("INSERT INTO tip_feedback_current_keys", query)
+        self.assertEqual(rows, [(7, 3)])
+        self.assertEqual(page_size, 1000)
+        self.assertTrue(
+            any("CREATE TEMP TABLE tip_feedback_current_keys" in query for query in target.executed)
+        )
+        self.assertTrue(
+            any(
+                "DELETE FROM analytics.fact_tip_feedback" in query
+                and "tip_feedback_current_keys" in query
+                for query in target.executed
+            )
+        )
+
+    def test_tip_feedback_snapshot_handles_more_than_one_page_of_keys(self) -> None:
+        """Paging the temp-table insert must not split stale-row deletion."""
+        rows = [
+            (review_id, 10, review_id, f"Farm {review_id}", 5, [])
+            for review_id in range(1, 1002)
+        ]
+        source = FakeCursor("source", [rows])
+        target = FakeCursor("target")
+        insert_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "upsert",
+            return_value=len(rows),
+        ), patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, values, page_size: insert_calls.append(
+                (query, values, page_size)
+            ),
+        ):
+            count = sync_analytics.sync_tip_feedback_snapshot(source, target)
+
+        self.assertEqual(count, 1001)
+        self.assertEqual(len(insert_calls), 1)
+        query, staged_keys, page_size = insert_calls[0]
+        self.assertIn("INSERT INTO tip_feedback_current_keys", query)
+        self.assertEqual(len(staged_keys), 1001)
+        self.assertEqual(page_size, 1000)
+        delete_queries = [
+            query
+            for query in target.executed
+            if "DELETE FROM analytics.fact_tip_feedback" in query
+        ]
+        self.assertEqual(len(delete_queries), 1)
+        self.assertIn("tip_feedback_current_keys", delete_queries[0])
+        self.assertNotIn("VALUES %s", delete_queries[0])
+
+    def test_tip_feedback_snapshot_empty_source_clears_destination(self) -> None:
+        """An empty source snapshot removes all stale feedback rows."""
+        source = FakeCursor("source", [[]])
+        target = FakeCursor("target")
+
+        with patch.object(sync_analytics, "upsert", return_value=0):
+            count = sync_analytics.sync_tip_feedback_snapshot(source, target)
+
+        self.assertEqual(count, 0)
+        self.assertTrue(
+            any(
+                query == "DELETE FROM analytics.fact_tip_feedback"
+                for query in target.executed
+            )
+        )
+
     def test_failed_step_rolls_back_without_advancing_watermark(self) -> None:
         source = FakeConnection("source", [[(1, "Empresa", "SP", "Sao Paulo")]])
         target = FakeConnection("target")

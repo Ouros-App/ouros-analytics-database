@@ -19,5 +19,7 @@ database:
       mode: on_change
     - file: sync_state.sql
       mode: on_change
+    - file: fact_tip_feedback_farm_scope.sql
+      mode: once
     - file: analytics_readonly_user.sql
       mode: on_change

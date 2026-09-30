@@ -22,7 +22,7 @@ feedback de dicas, além da view `analytics.v_farm_dashboard`.
 Foram utilizados `enterprises`, `addresses`, `farms`, `lots`,
 `water_registries`, `energy_registries`, `plans`, `enterprise_plans`,
 `payments`, `individual_goals`, `state_goals`, `regions_goals`,
-`farm_goals`, `state_goal_regions`, `tips`, `categories`,
+`farm_goals`, `state_goal_regions`, `tips`, `farms_tips`, `categories`,
 `tip_categories` e `reviews`.
 
 Os joins empresa-endereço-fazenda, empresa-plano-pagamento, fazenda-lote,
@@ -52,12 +52,21 @@ de secrets.
 
 ## Sincronização incremental
 
-O script `scripts/sync_analytics.py` lê somente registros com `updated_at` no
-intervalo entre o último watermark e o início da execução. Ele usa o role
-`analytics_sync_ro` na origem e uma credencial de escrita separada no destino,
-aplica joins/agregações/normalizações e grava com UPSERT. O watermark fica em
-`analytics.sync_state` e só é atualizado no mesmo commit dos dados; qualquer
-falha faz rollback e mantém o `last_sync` anterior.
+O script `scripts/sync_analytics.py` lê a maior parte das entidades por
+`updated_at`, no intervalo entre o último watermark e o início da execução.
+Ele usa o role `analytics_sync_ro` na origem e uma credencial de escrita
+separada no destino, aplica joins/agregações/normalizações e grava com UPSERT.
+O watermark fica em `analytics.sync_state` e só é atualizado no mesmo commit
+dos dados; qualquer falha faz rollback e mantém o `last_sync` anterior.
+
+O contrato da origem exige acesso de leitura a todas as tabelas usadas pelos
+joins, inclusive `public.farms_tips`. A relação entre dica e fazenda é
+normalizada nessa tabela; `public.tips` não possui `id_farm`. Como
+`farms_tips` não possui `updated_at`, `fact_tip_feedback` é reconciliada a
+partir de um snapshot completo em cada ciclo: as linhas atuais são atualizadas
+por UPSERT e associações `(review_id, farm_id)` que não existem mais na origem
+são removidas do destino. Isso cobre tanto novas associações quanto remoções sem
+depender de um timestamp inexistente.
 
 Configure `PRODUCTION_DATABASE_URL` e `ANALYTICS_SYNC_DATABASE_URL` no ambiente
 e execute:
