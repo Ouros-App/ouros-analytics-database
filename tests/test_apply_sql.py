@@ -49,6 +49,16 @@ class ApplySqlTest(unittest.TestCase):
             self.assertEqual(cfg["database"]["version_schema_file"], "versionamento.sql")
             self.assertEqual(cfg["database"]["execution_order"], [])
 
+    def test_sync_writer_privileges_are_versioned(self) -> None:
+        """Keep the analytics sync writer able to reconcile and delete rows."""
+        root = Path(__file__).resolve().parents[1]
+        content = (root / "sql" / "analytics_sync_writer_privileges.sql").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("analytics_sync_rw", content)
+        self.assertIn("SELECT, INSERT, UPDATE, DELETE", content)
+        self.assertIn("ON ALL TABLES IN SCHEMA analytics", content)
+
     def test_execution_order_preserves_multiple_scripts_and_modes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
