@@ -24,4 +24,4 @@ database:
     - file: analytics_readonly_user.sql
       mode: on_change
     - file: analytics_sync_writer_privileges.sql
-      mode: on_change
+      mode: always
