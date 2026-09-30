@@ -8,6 +8,7 @@ from scripts.apply_sql import load_config, sql_entries
 
 class ApplySqlTest(unittest.TestCase):
     def test_load_config_reads_sql_settings(self) -> None:
+        """Load SQL migration settings and expand required environment values."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config.yaml").write_text(
@@ -59,7 +60,14 @@ class ApplySqlTest(unittest.TestCase):
         self.assertIn("SELECT, INSERT, UPDATE, DELETE", content)
         self.assertIn("ON ALL TABLES IN SCHEMA analytics", content)
 
+        config = (root / "config.yaml").read_text(encoding="utf-8")
+        self.assertIn(
+            "- file: analytics_sync_writer_privileges.sql\n      mode: always",
+            config,
+        )
+
     def test_execution_order_preserves_multiple_scripts_and_modes(self) -> None:
+        """Preserve declared migration order and execution modes."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             sql_dir = root / "sql"
