@@ -50,6 +50,12 @@ com transações somente leitura e sem privilégios administrativos. A senha nã
 é versionada e deve ser configurada no ambiente de execução pelo gerenciador
 de secrets.
 
+O role `analytics_sync_rw` é provisionado fora deste repositório, mas suas
+permissões no schema analítico são versionadas aqui. Quando o role existe,
+`analytics_sync_writer_privileges.sql` garante `SELECT`, `INSERT`, `UPDATE`
+e `DELETE` nas tabelas `analytics.*`, permitindo UPSERTs e reconciliações de
+linhas removidas sem conceder privilégios administrativos.
+
 ## Sincronização incremental
 
 O script `scripts/sync_analytics.py` lê a maior parte das entidades por
