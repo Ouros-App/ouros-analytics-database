@@ -14,8 +14,9 @@ ele não replica o schema operacional.
 ## Modelo analítico
 
 O arquivo `sql/analytics_schema.sql` cria o schema `analytics` com dimensões de
-empresas e fazendas, fatos de lotes, consumo mensal, pagamentos, metas e
-feedback de dicas, além da view `analytics.v_farm_dashboard`.
+empresas e fazendas, fatos de lotes, consumo mensal e leituras individuais de
+água, pagamentos, metas e feedback de dicas, além da view
+`analytics.v_farm_dashboard`.
 
 ### Origem e tratamento
 
@@ -73,6 +74,12 @@ partir de um snapshot completo em cada ciclo: as linhas atuais são atualizadas
 por UPSERT e associações `(review_id, farm_id)` que não existem mais na origem
 são removidas do destino. Isso cobre tanto novas associações quanto remoções sem
 depender de um timestamp inexistente.
+
+`fact_water_registry` faz o primeiro preenchimento do histórico em lotes via
+cursor do servidor. Nos ciclos seguintes, sincroniza apenas leituras ou fazendas
+alteradas desde o watermark. As chaves atuais dos hidrômetros são conferidas a
+cada ciclo para remover leituras apagadas na origem, sem baixar todos os valores
+históricos para a aplicação.
 
 Configure `PRODUCTION_DATABASE_URL` e `ANALYTICS_SYNC_DATABASE_URL` no ambiente
 e execute:
