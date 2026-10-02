@@ -6,6 +6,32 @@ from psycopg2.extras import execute_values
 
 
 SYNC_NAME = "production_to_analytics"
+BATCH_SIZE = 1000
+WATER_REGISTRY_COLUMNS = (
+    "water_registry_id", "farm_id", "enterprise_id", "farm_name", "region",
+    "registration_date", "water_consumed_m3",
+)
+WATER_REGISTRY_QUERY = """
+    SELECT w.id, f.id, f.id_enterprise, btrim(f.name), lower(btrim(f.region)),
+           w.registration_date::date,
+           (w.end_hydrometer - w.start_hydrometer)::numeric
+    FROM public.water_registries w
+    JOIN public.farms f ON f.id = w.id_farm
+"""
+WATER_REGISTRY_INCREMENTAL_QUERY = """
+    WITH bounds AS (
+        SELECT %s::timestamptz AS last_sync, %s::timestamptz AS sync_end
+    )
+    SELECT w.id, f.id, f.id_enterprise, btrim(f.name), lower(btrim(f.region)),
+           w.registration_date::date,
+           (w.end_hydrometer - w.start_hydrometer)::numeric
+    FROM public.water_registries w
+    JOIN public.farms f ON f.id = w.id_farm
+    CROSS JOIN bounds b
+    WHERE (w.updated_at > b.last_sync AND w.updated_at <= b.sync_end)
+       OR (f.updated_at > b.last_sync AND f.updated_at <= b.sync_end)
+"""
+WATER_REGISTRY_KEYS_QUERY = "SELECT id FROM public.water_registries ORDER BY id"
 
 
 def env(name: str) -> str:
@@ -29,6 +55,67 @@ def upsert(cur, table: str, columns: tuple[str, ...], conflict: tuple[str, ...],
     )
     execute_values(cur, query, rows, page_size=1000)
     return len(rows)
+
+
+def _stream_source_rows(source, cursor_name: str, query: str, params=None):
+    """Yield bounded batches from a PostgreSQL server-side cursor."""
+    with source.cursor(name=cursor_name) as source_cur:
+        source_cur.itersize = BATCH_SIZE
+        if params is None:
+            source_cur.execute(query)
+        else:
+            source_cur.execute(query, params)
+        while rows := source_cur.fetchmany(BATCH_SIZE):
+            yield rows
+
+
+def sync_water_registry_fact(source, target_cur, last_sync, sync_end) -> int:
+    """Backfill once, upsert changed readings, and remove deleted source keys."""
+    target_cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM analytics.fact_water_registry LIMIT 1)"
+    )
+    has_existing_rows = target_cur.fetchone()[0]
+
+    target_cur.execute(
+        "CREATE TEMP TABLE water_registry_source_keys ("
+        "water_registry_id INTEGER PRIMARY KEY) ON COMMIT DROP"
+    )
+    for key_batch in _stream_source_rows(
+        source, "water_registry_source_keys", WATER_REGISTRY_KEYS_QUERY
+    ):
+        execute_values(
+            target_cur,
+            "INSERT INTO water_registry_source_keys (water_registry_id) VALUES %s "
+            "ON CONFLICT DO NOTHING",
+            key_batch,
+            page_size=BATCH_SIZE,
+        )
+
+    if has_existing_rows:
+        row_query = WATER_REGISTRY_INCREMENTAL_QUERY
+        row_params = (last_sync, sync_end)
+    else:
+        row_query = WATER_REGISTRY_QUERY
+        row_params = None
+
+    upserted = 0
+    for row_batch in _stream_source_rows(
+        source, "water_registry_rows", row_query, row_params
+    ):
+        upserted += upsert(
+            target_cur,
+            "analytics.fact_water_registry",
+            WATER_REGISTRY_COLUMNS,
+            ("water_registry_id",),
+            row_batch,
+        )
+
+    target_cur.execute(
+        "DELETE FROM analytics.fact_water_registry AS target "
+        "WHERE NOT EXISTS (SELECT 1 FROM water_registry_source_keys AS source "
+        "WHERE source.water_registry_id = target.water_registry_id)"
+    )
+    return upserted
 
 
 STEPS = [
@@ -143,21 +230,6 @@ STEPS = [
             "chickens_reference", "water_consumed_m3", "energy_consumed_kwh",
         ),
         ("month_start", "farm_id"),
-    ),
-    (
-        "fact_water_registry",
-        """
-        SELECT w.id, f.id, f.id_enterprise, btrim(f.name), lower(btrim(f.region)),
-               w.registration_date::date,
-               (w.end_hydrometer - w.start_hydrometer)::numeric
-        FROM public.water_registries w
-        JOIN public.farms f ON f.id = w.id_farm
-        """,
-        (
-            "water_registry_id", "farm_id", "enterprise_id", "farm_name",
-            "region", "registration_date", "water_consumed_m3",
-        ),
-        ("water_registry_id",),
     ),
     (
         "fact_payment",
@@ -287,7 +359,11 @@ def main() -> None:
     target = psycopg2.connect(env("ANALYTICS_SYNC_DATABASE_URL"))
     counts = {}
     try:
-        source.set_session(readonly=True, autocommit=False)
+        source.set_session(
+            isolation_level="REPEATABLE READ",
+            readonly=True,
+            autocommit=False,
+        )
         with target:
             with target.cursor() as target_cur, source.cursor() as source_cur:
                 target_cur.execute(
@@ -302,13 +378,12 @@ def main() -> None:
                 source_cur.execute("SELECT CURRENT_TIMESTAMP")
                 sync_end = source_cur.fetchone()[0]
                 for name, query, columns, conflict in STEPS:
-                    if name == "fact_water_registry":
-                        # Reconcile the full reading history because this fact is
-                        # new and the shared watermark may predate its creation.
-                        source_cur.execute(query)
-                    else:
-                        source_cur.execute(query, (last_sync, sync_end))
+                    source_cur.execute(query, (last_sync, sync_end))
                     counts[name] = upsert(target_cur, f"analytics.{name}", columns, conflict, source_cur.fetchall())
+
+                counts["fact_water_registry"] = sync_water_registry_fact(
+                    source, target_cur, last_sync, sync_end
+                )
 
                 # farms_tips has no updated_at in production, so this derived fact
                 # is reconciled from a complete snapshot on every cycle.

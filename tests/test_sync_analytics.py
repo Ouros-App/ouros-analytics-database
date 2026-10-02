@@ -7,9 +7,11 @@ from scripts import sync_analytics
 
 
 class FakeCursor:
-    def __init__(self, role, rows=None):
+    def __init__(self, role, rows=None, *, stream=False, registry_exists=False):
         self.role = role
         self.rows = list(rows or [])
+        self.stream = stream
+        self.registry_exists = registry_exists
         self.pending = None
         self.executed = []
 
@@ -23,6 +25,10 @@ class FakeCursor:
         self.executed.append(query)
         if self.role == "target" and query.startswith("SELECT last_sync"):
             self.pending = "last_sync"
+        elif self.role == "target" and query.startswith(
+            "SELECT EXISTS (SELECT 1 FROM analytics.fact_water_registry"
+        ):
+            self.pending = "registry_exists"
         elif self.role == "source" and query == "SELECT CURRENT_TIMESTAMP":
             self.pending = "sync_end"
         elif self.role == "source":
@@ -33,6 +39,8 @@ class FakeCursor:
             return (datetime(2026, 1, 1, tzinfo=timezone.utc),)
         if self.pending == "sync_end":
             return (datetime(2026, 9, 16, tzinfo=timezone.utc),)
+        if self.pending == "registry_exists":
+            return (self.registry_exists,)
         raise AssertionError(f"fetchone inesperado: {self.pending}")
 
     def fetchall(self):
@@ -40,18 +48,33 @@ class FakeCursor:
             raise AssertionError(f"fetchall inesperado: {self.pending}")
         return self.rows.pop(0) if self.rows else []
 
+    def fetchmany(self, size):
+        if self.pending != "rows" or not self.stream:
+            raise AssertionError(f"fetchmany inesperado: {self.pending}")
+        batch = self.rows[:size]
+        self.rows = self.rows[size:]
+        return batch
+
 
 class FakeConnection:
-    def __init__(self, role, rows=None):
+    def __init__(self, role, rows=None, *, named_rows=None, registry_exists=False):
         self.cursor_obj = FakeCursor(role, rows)
+        self.named_rows = list(named_rows or [])
+        self.named_cursors = []
+        self.registry_exists = registry_exists
+        self.cursor_obj.registry_exists = registry_exists
         self.committed = False
         self.rolled_back = False
 
     def set_session(self, **_kwargs):
         return None
 
-    def cursor(self):
-        return self.cursor_obj
+    def cursor(self, name=None):
+        if name is None:
+            return self.cursor_obj
+        cursor = FakeCursor("source", self.named_rows.pop(0), stream=True)
+        self.named_cursors.append(cursor)
+        return cursor
 
     def __enter__(self):
         return self
@@ -79,7 +102,8 @@ class SyncAnalyticsTest(unittest.TestCase):
     def test_main_upserts_and_commits_watermark(self) -> None:
         source = FakeConnection(
             "source",
-            [[(1, "Empresa", "SP", "Sao Paulo")], [], [], [], [], [], [], []],
+            [[(1, "Empresa", "SP", "Sao Paulo")], [], [], [], [], [], []],
+            named_rows=[[], []],
         )
         target = FakeConnection("target")
         execute_calls = []
@@ -101,18 +125,73 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertTrue(any("analytics.dim_enterprise" in query for query in execute_calls))
         self.assertTrue(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
 
-    def test_water_registry_fact_preserves_reading_date_and_consumption(self) -> None:
-        """Per-reading data must remain queryable instead of only monthly totals."""
-        name, query, columns, conflict = next(
-            step for step in sync_analytics.STEPS if step[0] == "fact_water_registry"
+    def test_water_registry_fact_backfills_once_in_batches_and_reconciles_deletes(self) -> None:
+        """The initial load streams full history and removes stale destination keys."""
+        reading = (1, 3, 8, "Farm", "sp", "2026-09-04", 540)
+        source = FakeConnection(
+            "source",
+            named_rows=[[(1,), (2,)], [reading]],
         )
+        target = FakeCursor("target", registry_exists=False)
+        upsert_calls = []
 
-        self.assertEqual(name, "fact_water_registry")
-        self.assertIn("FROM public.water_registries w", query)
-        self.assertIn("w.registration_date::date", query)
-        self.assertIn("w.end_hydrometer - w.start_hydrometer", query)
-        self.assertEqual(columns[-2:], ("registration_date", "water_consumed_m3"))
-        self.assertEqual(conflict, ("water_registry_id",))
+        with patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, rows, page_size: upsert_calls.append(
+                (query, rows, page_size)
+            ),
+        ):
+            count = sync_analytics.sync_water_registry_fact(
+                source,
+                target,
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 9, 16, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(count, 1)
+        self.assertIn(
+            sync_analytics.WATER_REGISTRY_KEYS_QUERY,
+            source.named_cursors[0].executed,
+        )
+        self.assertEqual(source.named_cursors[1].executed, [sync_analytics.WATER_REGISTRY_QUERY])
+        self.assertTrue(
+            any("DELETE FROM analytics.fact_water_registry" in query for query in target.executed)
+        )
+        self.assertEqual(len(upsert_calls), 2)
+        self.assertEqual(upsert_calls[1][1], [reading])
+
+    def test_water_registry_fact_only_reads_changes_after_initial_load(self) -> None:
+        """Subsequent cycles stream changed rows instead of the full history."""
+        reading = (3, 4, 9, "Other Farm", "sp", "2026-09-15", 25)
+        source = FakeConnection("source", named_rows=[[(3,)], [reading]])
+        target = FakeCursor("target", registry_exists=True)
+        upsert_calls = []
+
+        with patch.object(
+            sync_analytics,
+            "execute_values",
+            side_effect=lambda _cur, query, rows, page_size: upsert_calls.append(
+                (query, rows, page_size)
+            ),
+        ):
+            count = sync_analytics.sync_water_registry_fact(
+                source,
+                target,
+                datetime(2026, 9, 14, tzinfo=timezone.utc),
+                datetime(2026, 9, 16, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            source.named_cursors[1].executed,
+            [sync_analytics.WATER_REGISTRY_INCREMENTAL_QUERY],
+        )
+        self.assertIn(
+            "w.updated_at > b.last_sync",
+            sync_analytics.WATER_REGISTRY_INCREMENTAL_QUERY,
+        )
+        self.assertEqual(upsert_calls[-1][1], [reading])
 
 
     def test_tip_feedback_snapshot_uses_normalized_farm_relation(self) -> None:
