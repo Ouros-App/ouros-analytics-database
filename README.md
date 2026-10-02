@@ -14,8 +14,9 @@ ele não replica o schema operacional.
 ## Modelo analítico
 
 O arquivo `sql/analytics_schema.sql` cria o schema `analytics` com dimensões de
-empresas e fazendas, fatos de lotes, consumo mensal, pagamentos, metas e
-feedback de dicas, além da view `analytics.v_farm_dashboard`.
+empresas e fazendas, fatos de lotes, consumo mensal e leituras individuais de
+água, pagamentos, metas e feedback de dicas, além da view
+`analytics.v_farm_dashboard`.
 
 ### Origem e tratamento
 

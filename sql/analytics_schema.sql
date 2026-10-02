@@ -80,6 +80,16 @@ CREATE TABLE IF NOT EXISTS analytics.fact_farm_consumption_monthly (
     PRIMARY KEY (month_start, farm_id)
 );
 
+CREATE TABLE IF NOT EXISTS analytics.fact_water_registry (
+    water_registry_id INTEGER PRIMARY KEY,
+    farm_id INTEGER NOT NULL REFERENCES analytics.dim_farm(farm_id),
+    enterprise_id INTEGER NOT NULL REFERENCES analytics.dim_enterprise(enterprise_id),
+    farm_name TEXT NOT NULL,
+    region TEXT NOT NULL,
+    registration_date DATE NOT NULL,
+    water_consumed_m3 NUMERIC(14,3) NOT NULL CHECK (water_consumed_m3 >= 0)
+);
+
 CREATE TABLE IF NOT EXISTS analytics.fact_payment (
     payment_id INTEGER PRIMARY KEY,
     enterprise_id INTEGER NOT NULL REFERENCES analytics.dim_enterprise(enterprise_id),
@@ -125,6 +135,10 @@ CREATE INDEX IF NOT EXISTS fact_consumption_farm_month_idx
     ON analytics.fact_farm_consumption_monthly (farm_id, month_start DESC);
 CREATE INDEX IF NOT EXISTS fact_consumption_region_month_idx
     ON analytics.fact_farm_consumption_monthly (region, month_start DESC);
+CREATE INDEX IF NOT EXISTS fact_water_registry_farm_date_idx
+    ON analytics.fact_water_registry (farm_id, registration_date DESC);
+CREATE INDEX IF NOT EXISTS fact_water_registry_enterprise_date_idx
+    ON analytics.fact_water_registry (enterprise_id, registration_date DESC);
 CREATE INDEX IF NOT EXISTS fact_payment_enterprise_date_idx
     ON analytics.fact_payment (enterprise_id, payment_date DESC);
 CREATE INDEX IF NOT EXISTS fact_goal_status_idx

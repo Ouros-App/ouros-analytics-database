@@ -79,7 +79,7 @@ class SyncAnalyticsTest(unittest.TestCase):
     def test_main_upserts_and_commits_watermark(self) -> None:
         source = FakeConnection(
             "source",
-            [[(1, "Empresa", "SP", "Sao Paulo")], [], [], [], [], [], []],
+            [[(1, "Empresa", "SP", "Sao Paulo")], [], [], [], [], [], [], []],
         )
         target = FakeConnection("target")
         execute_calls = []
@@ -100,6 +100,19 @@ class SyncAnalyticsTest(unittest.TestCase):
         self.assertTrue(source.committed)
         self.assertTrue(any("analytics.dim_enterprise" in query for query in execute_calls))
         self.assertTrue(any("UPDATE analytics.sync_state" in query for query in target.cursor_obj.executed))
+
+    def test_water_registry_fact_preserves_reading_date_and_consumption(self) -> None:
+        """Per-reading data must remain queryable instead of only monthly totals."""
+        name, query, columns, conflict = next(
+            step for step in sync_analytics.STEPS if step[0] == "fact_water_registry"
+        )
+
+        self.assertEqual(name, "fact_water_registry")
+        self.assertIn("FROM public.water_registries w", query)
+        self.assertIn("w.registration_date::date", query)
+        self.assertIn("w.end_hydrometer - w.start_hydrometer", query)
+        self.assertEqual(columns[-2:], ("registration_date", "water_consumed_m3"))
+        self.assertEqual(conflict, ("water_registry_id",))
 
 
     def test_tip_feedback_snapshot_uses_normalized_farm_relation(self) -> None:

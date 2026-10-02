@@ -145,6 +145,21 @@ STEPS = [
         ("month_start", "farm_id"),
     ),
     (
+        "fact_water_registry",
+        """
+        SELECT w.id, f.id, f.id_enterprise, btrim(f.name), lower(btrim(f.region)),
+               w.registration_date::date,
+               (w.end_hydrometer - w.start_hydrometer)::numeric
+        FROM public.water_registries w
+        JOIN public.farms f ON f.id = w.id_farm
+        """,
+        (
+            "water_registry_id", "farm_id", "enterprise_id", "farm_name",
+            "region", "registration_date", "water_consumed_m3",
+        ),
+        ("water_registry_id",),
+    ),
+    (
         "fact_payment",
         """
         WITH bounds AS (SELECT %s::timestamptz AS last_sync, %s::timestamptz AS sync_end)
@@ -287,7 +302,12 @@ def main() -> None:
                 source_cur.execute("SELECT CURRENT_TIMESTAMP")
                 sync_end = source_cur.fetchone()[0]
                 for name, query, columns, conflict in STEPS:
-                    source_cur.execute(query, (last_sync, sync_end))
+                    if name == "fact_water_registry":
+                        # Reconcile the full reading history because this fact is
+                        # new and the shared watermark may predate its creation.
+                        source_cur.execute(query)
+                    else:
+                        source_cur.execute(query, (last_sync, sync_end))
                     counts[name] = upsert(target_cur, f"analytics.{name}", columns, conflict, source_cur.fetchall())
 
                 # farms_tips has no updated_at in production, so this derived fact
