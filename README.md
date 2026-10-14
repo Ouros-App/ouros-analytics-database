@@ -18,6 +18,12 @@ empresas e fazendas, fatos de lotes, consumo mensal e leituras individuais de
 água, pagamentos, metas e feedback de dicas, além da view
 `analytics.v_farm_dashboard`.
 
+`sql/dashboard_read_models.sql` cria as views `analytics.dashboard_*`
+consumidas pelo serviço de telemetria e concede leitura ao role `analytics_ro`.
+`dashboard_sync_status` adapta o watermark existente: `sync_name` vira `dataset`
+e `last_sync` vira `last_success_at`; o sincronizador não registra um status por
+execução, então a coluna `status` da view é nula.
+
 ### Origem e tratamento
 
 Foram utilizados `enterprises`, `addresses`, `farms`, `lots`,
