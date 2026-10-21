@@ -66,5 +66,12 @@ jobs:
         run: |
           test -n "$PRODUCTION_DATABASE_URL" || { echo "Missing PRODUCTION_DATABASE_URL secret"; exit 1; }
           test -n "$MONGODB_URI" || { echo "Missing MONGODB_URI secret"; exit 1; }
+      - name: Guard Atlas POC database name
+        shell: bash
+        run: |
+          case "$MONGODB_DATABASE" in
+            ouros_analytics_poc*) echo "POC database prefix verified" ;;
+            *) echo "Refusing non-POC MongoDB database"; exit 1 ;;
+          esac
       - name: Sync Postgres source to isolated Atlas POC collections
         run: python -m scripts.sync_mongodb
