@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/sync_mongodb.py
       - tests/test_sync_mongodb.py
+      - tests/test_sync_mongodb_store.py
       - requirements.txt
       - .github/workflows/mongodb-sync-poc.yml
   workflow_dispatch:
@@ -37,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Test isolated MongoDB synchronization code
-        run: python -m unittest discover -s tests -p 'test_sync_mongodb.py' -v
+        run: python -m unittest discover -s tests -p 'test_sync_mongodb*.py' -v
 
   sync:
     name: atlas-poc-sync
