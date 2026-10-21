@@ -1,0 +1,69 @@
+name: MongoDB Analytics Sync POC
+
+on:
+  push:
+    branches:
+      - experiment/mongodb-atlas-sync
+    paths:
+      - scripts/sync_mongodb.py
+      - tests/test_sync_mongodb.py
+      - requirements.txt
+      - .github/workflows/mongodb-sync-poc.yml
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: analytics-mongodb-poc
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: mongo-poc-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test isolated MongoDB synchronization code
+        run: python -m unittest discover -s tests -p 'test_sync_mongodb.py' -v
+
+  sync:
+    name: atlas-poc-sync
+    needs: tests
+    if: ${{ (github.event_name == 'push' && vars.MONGO_SYNC_POC_ENABLED == 'true') || (github.event_name != 'push' && vars.MONGO_SYNC_ENABLED == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGODB_DATABASE: ${{ vars.MONGODB_DATABASE || 'ouros_analytics_poc' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Fail fast on missing secrets
+        shell: bash
+        run: |
+          test -n "$PRODUCTION_DATABASE_URL" || { echo "Missing PRODUCTION_DATABASE_URL secret"; exit 1; }
+          test -n "$MONGODB_URI" || { echo "Missing MONGODB_URI secret"; exit 1; }
+      - name: Sync Postgres source to isolated Atlas POC collections
+        run: python -m scripts.sync_mongodb
