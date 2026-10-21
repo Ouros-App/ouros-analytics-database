@@ -192,7 +192,10 @@ def sync_snapshot(source, db, run_id: str, sync_end: datetime) -> dict[str, int]
         buckets = measurement_buckets(metric, rows, run_id)
         counts[f"{metric}_buckets"] = write_docs(db[COLLECTION_BUCKETS], buckets)
 
-    if counts.get("dim_farm", 0) == 0:\n        raise RuntimeError("POC safety: refusing to prune on empty farm snapshot")\n\n    # A full source snapshot also catches hard deletes and link removals.
+    if counts.get("dim_farm", 0) == 0:
+        raise RuntimeError("POC safety: refusing to prune on empty farm snapshot")
+
+    # A full source snapshot also catches hard deletes and link removals.
     # Do not prune before all datasets have been written successfully.
     for name in COLLECTIONS:
         db[name].delete_many({"_sync_run": {"$ne": run_id}})
