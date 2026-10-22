@@ -6,6 +6,8 @@ on:
       - experiment/mongodb-atlas-sync
     paths:
       - scripts/sync_mongodb.py
+      - scripts/audit_mongodb_poc.py
+      - tests/test_audit_mongodb_poc.py
       - tests/test_sync_mongodb.py
       - tests/test_sync_mongodb_store.py
       - requirements.txt
@@ -38,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Test isolated MongoDB synchronization code
-        run: python -m unittest discover -s tests -p 'test_sync_mongodb*.py' -v
+        run: python -m unittest discover -s tests -p 'test_*mongodb*.py' -v
 
   sync:
     name: atlas-poc-sync
@@ -112,3 +114,12 @@ jobs:
           PY
       - name: Sync Postgres source to isolated Atlas POC collections
         run: python -m scripts.sync_mongodb
+      - name: Record first snapshot fingerprint
+        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
+        run: python -m scripts.audit_mongodb_poc snapshot --baseline /tmp/atlas-poc-baseline.json
+      - name: Repeat sync to verify idempotence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
+        run: python -m scripts.sync_mongodb
+      - name: Audit Atlas against PostgreSQL and report storage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
+        run: python -m scripts.audit_mongodb_poc verify --baseline /tmp/atlas-poc-baseline.json
