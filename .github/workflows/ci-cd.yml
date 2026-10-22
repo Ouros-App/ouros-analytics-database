@@ -71,6 +71,12 @@ jobs:
           test -f scripts/sync_mongodb.py
           test -f scripts/audit_mongodb_poc.py
           test -f .github/workflows/mongodb-sync-poc.yml
+          # Do not silently restore the retired PostgreSQL Analytics deploy path.
+          test ! -e .github/workflows/apply-sql-on-main.yml
+          test ! -e scripts/apply_sql.py
+          test ! -e scripts/sync_analytics.py
+          test ! -e scripts/deploy_homelab.sh
+          test ! -e config.yaml
 
 
   # Retain these check names while GitHub branch-protection rules reference them.
