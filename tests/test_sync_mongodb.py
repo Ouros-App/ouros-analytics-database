@@ -20,6 +20,18 @@ class MongoModelsTest(unittest.TestCase):
         self.assertEqual(doc["cost"], Decimal128("19.99"))
         self.assertEqual(doc["_sync_run"], "run1")
 
+    def test_shared_state_goal_has_distinct_ids_for_different_farms(self):
+        columns = ("goal_id", "goal_scope", "farm_id", "goal_status")
+        first = sync_mongodb.document_for(
+            "fact_goal", columns, ("goal_scope", "goal_id"), (12, "state", 42, "Pendente"), "run",
+        )
+        second = sync_mongodb.document_for(
+            "fact_goal", columns, ("goal_scope", "goal_id"), (12, "state", 43, "Concluída"), "run",
+        )
+        self.assertNotEqual(first["_id"], second["_id"])
+        self.assertEqual(first["_id"], "fact_goal:state:12:42")
+        self.assertEqual(second["_id"], "fact_goal:state:12:43")
+
     def test_monthly_snapshot_is_partitioned_by_farm_and_month(self):
         doc = sync_mongodb.document_for(
             "fact_farm_consumption_monthly",
