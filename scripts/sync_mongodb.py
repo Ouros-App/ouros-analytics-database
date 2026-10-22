@@ -74,8 +74,18 @@ def connect_production_postgres():
 
     connection_args = {"sslmode": "verify-full"}
     if not options.get("sslrootcert") and not os.getenv("PGSSLROOTCERT"):
-        # Trust the OS CA bundle, not an unauthenticated encrypted connection.
-        connection_args["sslrootcert"] = "system"
+        # psycopg2-binary bundles libpq/OpenSSL, whose default CA search path
+        # may differ from the runner's trusted OS certificate bundle.
+        # Explicitly use a real system trust bundle when present, while
+        # preserving certificate and hostname verification with verify-full.
+        trusted_bundles = (
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/ssl/cert.pem",
+        )
+        connection_args["sslrootcert"] = next(
+            (ca for ca in trusted_bundles if os.path.isfile(ca)),
+            "system",
+        )
     return psycopg2.connect(dsn, **connection_args)
 
 
