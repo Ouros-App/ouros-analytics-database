@@ -14,6 +14,8 @@ class EnforcedTransportTest(unittest.TestCase):
         with patch.dict(os.environ, {
             "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod",
         }, clear=True), patch.object(
+            sync_mongodb.os.path, "isfile", return_value=True,
+        ), patch.object(
             sync_mongodb.psycopg2, "connect", return_value=object(),
         ) as connect:
             sync_mongodb.connect_production_postgres()
@@ -26,6 +28,8 @@ class EnforcedTransportTest(unittest.TestCase):
                 "postgresql://example.invalid/segundo_prod?sslmode=verify-full"
             ),
         }, clear=True), patch.object(
+            sync_mongodb.os.path, "isfile", return_value=True,
+        ), patch.object(
             sync_mongodb.psycopg2, "connect", return_value=object(),
         ) as connect:
             sync_mongodb.connect_production_postgres()
