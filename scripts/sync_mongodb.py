@@ -137,6 +137,33 @@ def measurement_buckets(metric: str, rows: Iterable[tuple], run_id: str,
         yield emit(current_key, current_rows, part, enterprise_id)
 
 
+def mongo_compatible_query(dataset: str, query: str) -> str:
+    """Adapt legacy analytics extracts to the current operational schema.
+
+    These changes affect only the Mongo POC, not the live PostgreSQL sync.
+    """
+    if dataset == "dim_farm":
+        # Removed by remover_state_goal_farm_id_and_farms_place.sql and
+        # remover_poultry_capacity_farms.sql. Preserve document fields as null.
+        query = query.replace("btrim(f.place)", "NULL::text")
+        query = query.replace("f.poultry_capacity", "NULL::integer")
+    elif dataset == "fact_goal":
+        # State goals now belong to farms through farm_goals and the status
+        # is stored on each association rather than on state_goals.
+        replacements = {
+            "SELECT g.id, 'state', g.id_farm,":
+                "SELECT g.id, 'state', fg.id_farm,",
+            "lower(btrim(g.status)), btrim(g.title), g.target_value,\n               g.date_creation":
+                "lower(btrim(fg.status)), btrim(g.title), g.target_value,\n               g.date_creation",
+            "FROM public.state_goals g\n        JOIN public.farms f ON f.id = g.id_farm":
+                "FROM public.state_goals g\n        JOIN public.farm_goals fg ON fg.id_goal = g.id\n        JOIN public.farms f ON f.id = fg.id_farm",
+        }
+        for old, new in replacements.items():
+            if old not in query:
+                raise RuntimeError(f"Legacy {dataset} query changed: {old!r}")
+            query = query.replace(old, new)
+    return query
+
 def stream_rows(source, query: str, params=None, *, name: str):
     """Bounded reads inside the source REPEATABLE READ snapshot."""
     with source.cursor(name=name) as cursor:
@@ -177,6 +204,7 @@ def sync_snapshot(source, db, run_id: str, sync_end: datetime) -> dict[str, int]
 
     for dataset, query, columns, conflict in STEPS:
         collection = COLLECTION_MONTHLY if dataset == "fact_farm_consumption_monthly" else COLLECTION_ROWS
+        query = mongo_compatible_query(dataset, query)
         rows = stream_rows(source, query, (EPOCH, sync_end), name=f"mongo_{dataset}")
         docs = (document_for(dataset, columns, conflict, row, run_id) for row in rows)
         counts[dataset] = write_docs(db[collection], docs)
