@@ -34,8 +34,9 @@ REPORT_COLLECTIONS = (*COLLECTIONS,)
 TOLERANCE = Decimal("0.000001")
 
 # The CI workflow runs snapshot/verify in a single isolated Ubuntu job.
-# Do not accept a filename from CLI/env: no user-controlled file traversal.
-BASELINE_PATH = Path("/tmp/atlas-poc-baseline.json")
+# Keep its private baseline under the runner's home, not a shared writable
+# directory such as /tmp. No CLI or environment value supplies its filename.
+BASELINE_PATH = Path.home() / ".ouros-analytics-poc-baseline.json"
 
 
 def save_baseline(contents: dict) -> None:
