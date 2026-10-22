@@ -80,6 +80,9 @@ def document_for(dataset: str, columns: tuple[str, ...],
     data["_id"] = f"{dataset}:{identifier}"
     data["dataset"] = dataset
     data["_sync_run"] = run_id
+    if dataset == "fact_goal":
+        # A shared state goal can have a separate status for every farm link.
+        data["_id"] = f"fact_goal:{data['goal_scope']}:{data['goal_id']}:{data['farm_id']}"
     if dataset == "fact_farm_consumption_monthly":
         data["_id"] = f"{data['farm_id']}:{date_value(row[0]).isoformat()}"
         data["water_metrics"] = {"monthly_total_m3": data.pop("water_consumed_m3")}
