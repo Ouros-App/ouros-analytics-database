@@ -50,9 +50,12 @@ In GitHub repo **Settings -> Secrets and variables -> Actions**:
 The PostgreSQL helper requires `sslmode=verify-full` for source-server
 authentication, including DNS hostname validation. If the URI omits
 `sslmode`, the helper selects `verify-full`. If a custom CA file is not
-specified through `sslrootcert` or `PGSSLROOTCERT`, it uses
-`sslrootcert=system` (requires a supporting libpq and trusted system
-certificate authorities). Explicit `sslmode=require` or `verify-ca` is
+specified through `sslrootcert` or `PGSSLROOTCERT`, it uses the
+trusted Ubuntu/Debian OS CA bundle (`/etc/ssl/certs/ca-certificates.crt`) when
+available, then `/etc/ssl/cert.pem`, falling back to `sslrootcert=system`.
+An explicit CA path avoids incompatible trust-store discovery with bundled
+libpq/OpenSSL in `psycopg2-binary`. All modes still verify certificate
+chains and hostname identity. Explicit `sslmode=require` or `verify-ca` is
 rejected, so an existing `?sslmode=require` repository secret needs to be
 updated to `?sslmode=verify-full`; **never weaken verification to make a
 connection succeed**. The host must match the Neon TLS certificate.
