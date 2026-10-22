@@ -145,16 +145,18 @@ class AuditScenariosTest(unittest.TestCase):
             audit.check_monthly_totals(source, self.db)
 
     def test_monthly_atlas_only_nonzero_fails(self):
+        source = Source()
         with self.assertRaisesRegex(AssertionError, "nonzero Atlas month"):
-            audit.check_monthly_totals(Source(), self.db)
+            audit.check_monthly_totals(source, self.db)
 
     def test_zero_payments_are_valid(self):
         audit.explain_payments(Source(payments=0), 0)
         audit.explain_payments(Source(payments=12), 12)
 
     def test_payments_disappeared_in_join_are_rejected(self):
+        source = Source(payments=1)
         with self.assertRaisesRegex(AssertionError, "none survived"):
-            audit.explain_payments(Source(payments=1), 0)
+            audit.explain_payments(source, 0)
 
     def test_storage_reports_index_and_data_bytes(self):
         self.db[audit.COLLECTION_ROWS] = Collection([
