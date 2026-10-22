@@ -71,6 +71,27 @@ GitHub `schedule` only runs on the default branch; a newly introduced
 `workflow_dispatch` workflow cannot be manually dispatched until it exists
 on the default branch.
 
+### Automated verification
+
+A branch push now performs **two consecutive syncs**, records business-content
+SHA-256 fingerprints after the first one, then compares them after the second.
+The audit checks every SQL-derived document and both water/energy registry
+buckets against Atlas. It also independently recalculates farm/month water and
+energy totals from source registries, explains the zero-payment case by
+counting source `payments`, and reports per-collection BSON bytes.
+
+Where supported, the audit also queries `dbStats` for data, storage and index
+bytes. Shared Atlas tiers or limited database roles may reject that command;
+in that case the fallback is raw BSON size only, **not** a definitive Atlas
+storage-quota or billing measurement. Review Atlas Cluster Metrics to confirm
+storage headroom.
+
+The double-sync verification runs only on the experimental branch's push
+workflow. If the workflow is later merged and scheduled, it performs a single
+regular sync instead. A source record updated during the two snapshots can
+produce a strict fingerprint mismatch; rerun the audit rather than suppressing
+the check.
+
 ### Acceptance checks before migrating telemetry
 
 - Initial sync produces nonempty documents where production has source data.
