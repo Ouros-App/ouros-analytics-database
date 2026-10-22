@@ -18,7 +18,7 @@ from pathlib import Path
 from bson import BSON, Decimal128, json_util
 from pymongo.errors import OperationFailure
 
-from scripts.sync_analytics import (
+from scripts.source_queries import (
     STEPS, TIP_FEEDBACK_COLUMNS, TIP_FEEDBACK_CONFLICT, TIP_FEEDBACK_SNAPSHOT_QUERY,
     WATER_REGISTRY_QUERY,
 )

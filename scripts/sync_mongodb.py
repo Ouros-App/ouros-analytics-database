@@ -3,7 +3,7 @@
 
 Full reconciliation is deliberate for the POC: retries, source deletes and old
 corrections are handled without depending on complete updated_at coverage.
-The existing PostgreSQL sync remains unchanged.
+Only operational Neon PostgreSQL is read; MongoDB Atlas is the sole analytics destination.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from urllib.parse import parse_qsl, urlsplit
 from bson import BSON, Decimal128
 from pymongo import MongoClient, ReplaceOne
 
-from scripts.sync_analytics import (
+from scripts.source_queries import (
     STEPS,
     TIP_FEEDBACK_COLUMNS,
     TIP_FEEDBACK_CONFLICT,
@@ -87,6 +87,33 @@ def connect_production_postgres():
             "system",
         )
     return psycopg2.connect(dsn, **connection_args)
+
+
+EXPECTED_SOURCE_DATABASE = "segundo_prod"
+
+
+def validate_source_database(source) -> None:
+    """Refuse an unexpected Neon database or an incomplete source schema."""
+    with source.cursor() as cursor:
+        cursor.execute(
+            "SELECT current_database(), "
+            "to_regclass('public.enterprises') IS NOT NULL, "
+            "to_regclass('public.farms') IS NOT NULL"
+        )
+        source_info = cursor.fetchone()
+
+    if source_info is None or len(source_info) != 3:
+        raise RuntimeError("Could not verify the PostgreSQL source database")
+    database, enterprises, farms = source_info
+    if database != EXPECTED_SOURCE_DATABASE:
+        raise RuntimeError(
+            f"Unexpected source database: expected {EXPECTED_SOURCE_DATABASE}, got {database}"
+        )
+    if not enterprises or not farms:
+        raise RuntimeError(
+            "PostgreSQL source is missing public.enterprises or public.farms"
+        )
+    print(f"Verified PostgreSQL source database={database} and required tables", flush=True)
 
 
 def mongodb_client(*, retry_writes: bool | None = None):
@@ -207,7 +234,7 @@ def measurement_buckets(metric: str, rows: Iterable[tuple], run_id: str,
 def mongo_compatible_query(dataset: str, query: str) -> str:
     """Adapt legacy analytics extracts to the current operational schema.
 
-    These changes affect only the Mongo POC, not the live PostgreSQL sync.
+    Only MongoDB consumes this source-query compatibility layer.
     """
     if dataset == "dim_farm":
         # Removed by remover_state_goal_farm_id_and_farms_place.sql and
@@ -308,9 +335,10 @@ def main() -> None:
     try:
         client.admin.command("ping")
         db = client[db_name]
-        state = db["poc_sync_state"]
         source = connect_production_postgres()
         source.set_session(isolation_level="REPEATABLE READ", readonly=True, autocommit=False)
+        validate_source_database(source)
+        state = db["poc_sync_state"]
         with source.cursor() as cursor:
             cursor.execute("SELECT CURRENT_TIMESTAMP")
             sync_end = cursor.fetchone()[0]
