@@ -15,6 +15,7 @@ from itertools import chain
 from typing import Iterable
 
 import psycopg2
+from psycopg2.extensions import parse_dsn
 from bson import BSON, Decimal128
 from pymongo import MongoClient, ReplaceOne
 
@@ -50,6 +51,26 @@ def required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+TLS_MODES = frozenset({"require", "verify-ca", "verify-full"})
+
+
+def connect_production_postgres():
+    """Open the source connection with TLS; never fall back to plaintext."""
+    dsn = required_env("PRODUCTION_DATABASE_URL")
+    configured = parse_dsn(dsn).get("sslmode")
+    if configured is not None and configured not in TLS_MODES:
+        raise RuntimeError("PRODUCTION_DATABASE_URL must require PostgreSQL TLS")
+    return psycopg2.connect(dsn, sslmode=configured or "require")
+
+
+def mongodb_client(*, retry_writes: bool | None = None):
+    """Require TLS for mongodb:// and mongodb+srv:// URIs alike."""
+    options = {"serverSelectionTimeoutMS": 10000, "tls": True}
+    if retry_writes is not None:
+        options["retryWrites"] = retry_writes
+    return MongoClient(required_env("MONGODB_URI"), **options)
 
 
 def bson_value(value):
@@ -90,6 +111,31 @@ def document_for(dataset: str, columns: tuple[str, ...],
     return data
 
 
+def _bucket_document(key, entries, chunk, enterprise, run_id):
+    kind, farm_id, month = key
+    document = {
+        "_id": f"{kind}:{farm_id}:{month}:{chunk:04d}",
+        "metric": kind,
+        "farm_id": farm_id,
+        "enterprise_id": enterprise,
+        "month": month,
+        "part": chunk,
+        "readings": entries,
+        "_sync_run": run_id,
+    }
+    if len(BSON.encode(document)) > MAX_BSON_BYTES:
+        raise ValueError("MongoDB metric bucket exceeded 12 MiB safety limit")
+    return document
+
+
+def _reading_fields(metric: str, row: tuple):
+    # Water: (id, farm, enterprise, name, region, date, m3).
+    # Energy: (id, farm, enterprise, date, kWh).
+    if metric == "water":
+        return row[5], row[6]
+    return row[3], row[4]
+
+
 def measurement_buckets(metric: str, rows: Iterable[tuple], run_id: str,
                         max_readings: int = BUCKET_READINGS):
     """Chunk sorted records per farm/metric/month; never grow unbounded arrays.
@@ -103,30 +149,12 @@ def measurement_buckets(metric: str, rows: Iterable[tuple], run_id: str,
     part = 0
     enterprise_id = None
 
-    def emit(key, entries, chunk, enterprise):
-        kind, farm_id, month = key
-        document = {
-            "_id": f"{kind}:{farm_id}:{month}:{chunk:04d}",
-            "metric": kind,
-            "farm_id": farm_id,
-            "enterprise_id": enterprise,
-            "month": month,
-            "part": chunk,
-            "readings": entries,
-            "_sync_run": run_id,
-        }
-        if len(BSON.encode(document)) > MAX_BSON_BYTES:
-            raise ValueError("MongoDB metric bucket exceeded 12 MiB safety limit")
-        return document
-
     for row in rows:
-        # Water rows: (id, farm, enterprise, name, region, date, m3).
-        # Energy rows: (id, farm, enterprise, date, kWh).
-        recorded = date_value(row[5] if metric == "water" else row[3])
-        amount = row[6] if metric == "water" else row[4]
+        recorded_at, amount = _reading_fields(metric, row)
+        recorded = date_value(recorded_at)
         key = (metric, int(row[1]), recorded.strftime("%Y-%m"))
         if current_key is not None and (key != current_key or len(current_rows) >= max_readings):
-            yield emit(current_key, current_rows, part, enterprise_id)
+            yield _bucket_document(current_key, current_rows, part, enterprise_id, run_id)
             part = part + 1 if key == current_key else 0
             current_rows = []
         current_key = key
@@ -137,7 +165,7 @@ def measurement_buckets(metric: str, rows: Iterable[tuple], run_id: str,
             "value": bson_value(amount),
         })
     if current_key is not None:
-        yield emit(current_key, current_rows, part, enterprise_id)
+        yield _bucket_document(current_key, current_rows, part, enterprise_id, run_id)
 
 
 def mongo_compatible_query(dataset: str, query: str) -> str:
@@ -234,19 +262,18 @@ def sync_snapshot(source, db, run_id: str, sync_end: datetime) -> dict[str, int]
 
 
 def main() -> None:
-    uri = required_env("MONGODB_URI")
     db_name = os.getenv("MONGODB_DATABASE", "ouros_analytics_poc")
     if not db_name.startswith("ouros_analytics_poc"):
         raise RuntimeError("POC safety: MONGODB_DATABASE must begin with ouros_analytics_poc")
     run_id = uuid.uuid4().hex
-    client = MongoClient(uri, serverSelectionTimeoutMS=10000, retryWrites=True)
+    client = mongodb_client(retry_writes=True)
     source = None
     state = None
     try:
         client.admin.command("ping")
         db = client[db_name]
         state = db["poc_sync_state"]
-        source = psycopg2.connect(required_env("PRODUCTION_DATABASE_URL"))
+        source = connect_production_postgres()
         source.set_session(isolation_level="REPEATABLE READ", readonly=True, autocommit=False)
         with source.cursor() as cursor:
             cursor.execute("SELECT CURRENT_TIMESTAMP")
