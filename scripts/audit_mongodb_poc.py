@@ -33,6 +33,29 @@ COLLECTION_STATE = "poc_sync_state"
 REPORT_COLLECTIONS = (*COLLECTIONS,)
 TOLERANCE = Decimal("0.000001")
 
+# The CI workflow runs snapshot/verify in a single isolated Ubuntu job.
+# Do not accept a filename from CLI/env: no user-controlled file traversal.
+BASELINE_PATH = Path("/tmp/atlas-poc-baseline.json")
+
+
+def save_baseline(contents: dict) -> None:
+    """Create a private baseline without following links or overwriting files."""
+    fd = os.open(
+        BASELINE_PATH,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        json.dump(contents, output, indent=2)
+
+
+def load_baseline() -> dict:
+    """Read only the expected baseline, without following symbolic links."""
+    fd = os.open(BASELINE_PATH, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "r", encoding="utf-8") as source:
+        return json.load(source)
+
+
 
 def without_run(document: dict) -> dict:
     result = dict(document)
@@ -215,7 +238,6 @@ def report_storage(db) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit Mongo POC safely")
     parser.add_argument("mode", choices=["snapshot", "verify"])
-    parser.add_argument("--baseline", type=Path, required=True)
     args = parser.parse_args()
 
     db_name = os.getenv("MONGODB_DATABASE", "ouros_analytics_poc")
@@ -232,7 +254,7 @@ def main() -> None:
 
         current = fingerprint(db)
         if args.mode == "snapshot":
-            args.baseline.write_text(json.dumps(current, indent=2), encoding="utf-8")
+            save_baseline(current)
             print(
                 "IDEMPOTENCE baseline captured: " +
                 ", ".join(f"{name}={v['count']}" for name, v in current.items()),
@@ -240,7 +262,7 @@ def main() -> None:
             )
             return
 
-        expected = json.loads(args.baseline.read_text(encoding="utf-8"))
+        expected = load_baseline()
         for name in REPORT_COLLECTIONS:
             if current.get(name) != expected.get(name):
                 raise AssertionError(
