@@ -200,14 +200,16 @@ class AuditScenariosTest(unittest.TestCase):
                   "poc_metric_buckets": {"count": 1, "sha256": "ghi"}}
         source = Source()
         with tempfile.TemporaryDirectory() as folder:
-            baseline = str(Path(folder) / "baseline.json")
+            baseline = Path(folder) / "baseline.json"
             with patch.dict(os.environ, {
                 "MONGODB_URI": "mongodb://example.invalid/",
                 "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/",
             }), patch.object(audit, "mongodb_client", return_value=client), patch.object(
                 audit, "fingerprint", return_value=before,
             ), patch.object(
-                sys, "argv", ["audit", "snapshot", "--baseline", baseline]
+                audit, "BASELINE_PATH", baseline,
+            ), patch.object(
+                sys, "argv", ["audit", "snapshot"]
             ):
                 audit.main()
             self.assertEqual(json.loads(Path(baseline).read_text()), before)
@@ -227,7 +229,9 @@ class AuditScenariosTest(unittest.TestCase):
             ) as payments, patch.object(
                 audit, "report_storage"
             ) as storage, patch.object(
-                sys, "argv", ["audit", "verify", "--baseline", baseline]
+                audit, "BASELINE_PATH", baseline,
+            ), patch.object(
+                sys, "argv", ["audit", "verify"]
             ):
                 audit.main()
             parity.assert_called_once()
@@ -255,10 +259,45 @@ class AuditScenariosTest(unittest.TestCase):
                     "poc_analytics_rows": {"count": 2, "sha256": "changed"}
                 }
             ), patch.object(
-                sys, "argv", ["audit", "verify", "--baseline", str(path)]
+                audit, "BASELINE_PATH", path,
+            ), patch.object(
+                sys, "argv", ["audit", "verify"]
             ):
                 with self.assertRaisesRegex(AssertionError, "IDEMPOTENCE FAILED"):
                     audit.main()
+
+
+    def test_untrusted_baseline_path_cli_argument_is_rejected(self):
+        with patch.object(
+            sys, "argv", ["audit", "snapshot", "--baseline", "/etc/passwd"]
+        ), self.assertRaises(SystemExit) as error:
+            audit.main()
+        self.assertEqual(error.exception.code, 2)
+
+    def test_baseline_is_private_and_does_not_overwrite_existing_data(self):
+        with tempfile.TemporaryDirectory() as folder:
+            baseline = Path(folder) / "baseline.json"
+            with patch.object(audit, "BASELINE_PATH", baseline):
+                audit.save_baseline({"poc_analytics_rows": {"count": 1}})
+                self.assertEqual(
+                    audit.load_baseline(), {"poc_analytics_rows": {"count": 1}}
+                )
+                self.assertEqual(baseline.stat().st_mode & 0o777, 0o600)
+                with self.assertRaises(FileExistsError):
+                    audit.save_baseline({"poc_analytics_rows": {"count": 2}})
+
+    def test_baseline_rejects_symlink_in_both_directions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            victim = Path(folder) / "victim.json"
+            victim.write_text("sensitive")
+            baseline = Path(folder) / "baseline.json"
+            baseline.symlink_to(victim)
+            with patch.object(audit, "BASELINE_PATH", baseline):
+                with self.assertRaises(OSError):
+                    audit.save_baseline({"bad": True})
+                with self.assertRaises(OSError):
+                    audit.load_baseline()
+            self.assertEqual(victim.read_text(), "sensitive")
 
 
 if __name__ == "__main__":
