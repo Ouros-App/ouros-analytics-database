@@ -41,11 +41,26 @@ In GitHub repo **Settings -> Secrets and variables -> Actions**:
 
 | Type | Name | Notes |
 | --- | --- | --- |
-| Secret | `PRODUCTION_DATABASE_URL` | Read-only credential for the source PostgreSQL DB; TLS required (sslmode=require, verify-ca or verify-full) |
-| Secret | `MONGODB_URI` | Atlas DB user with minimum write permissions on the **POC** database; client enforces TLS |
+| Secret | `PRODUCTION_DATABASE_URL` | Read-only source credential; `sslmode=verify-full` required when set in URI (or omitted to use enforced default); hostname and certificate checked with trusted system CA, or a configured trusted CA |
+| Secret | `MONGODB_URI` | Atlas DB user restricted to the **POC** database; TLS and certificate/hostname checks enforced, insecure URI options rejected |
 | Variable (optional) | `MONGODB_DATABASE` | Defaults to `ouros_analytics_poc`; must start with that prefix |
 | Variable | `MONGO_SYNC_POC_ENABLED` | Set to `true` to opt in to **branch-push** sync testing |
 | Variable | `MONGO_SYNC_ENABLED` | Set to `true` to opt in to manual/scheduled sync **after merge** |
+
+The PostgreSQL helper requires `sslmode=verify-full` for source-server
+authentication, including DNS hostname validation. If the URI omits
+`sslmode`, the helper selects `verify-full`. If a custom CA file is not
+specified through `sslrootcert` or `PGSSLROOTCERT`, it uses
+`sslrootcert=system` (requires a supporting libpq and trusted system
+certificate authorities). Explicit `sslmode=require` or `verify-ca` is
+rejected, so an existing `?sslmode=require` repository secret needs to be
+updated to `?sslmode=verify-full`; **never weaken verification to make a
+connection succeed**. The host must match the Neon TLS certificate.
+
+MongoDB connections use TLS with normal certificate/hostname verification.
+URI flags enabling `tlsInsecure`, `tlsAllowInvalidCertificates`, or
+`tlsAllowInvalidHostnames`, and URI flags disabling TLS, cause the job to
+fail before any MongoDB network connection.
 
 Do not put credentials in YAML, URLs, PR comments or logs. Atlas Network
 Access must allow the runner's outbound address; GitHub-hosted runners have
