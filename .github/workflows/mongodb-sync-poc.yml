@@ -85,10 +85,10 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          import psycopg2
+          from scripts.sync_mongodb import connect_production_postgres
 
           expected = os.environ['EXPECTED_SOURCE_DATABASE']
-          connection = psycopg2.connect(os.environ['PRODUCTION_DATABASE_URL'])
+          connection = connect_production_postgres()
           try:
               connection.set_session(readonly=True)
               with connection.cursor() as cursor:
