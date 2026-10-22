@@ -3,7 +3,7 @@
 
 Full reconciliation is deliberate for the POC: retries, source deletes and old
 corrections are handled without depending on complete updated_at coverage.
-The existing PostgreSQL sync remains unchanged.
+Only operational Neon PostgreSQL is read; MongoDB Atlas is the sole analytics destination.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from urllib.parse import parse_qsl, urlsplit
 from bson import BSON, Decimal128
 from pymongo import MongoClient, ReplaceOne
 
-from scripts.sync_analytics import (
+from scripts.source_queries import (
     STEPS,
     TIP_FEEDBACK_COLUMNS,
     TIP_FEEDBACK_CONFLICT,
