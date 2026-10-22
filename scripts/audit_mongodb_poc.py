@@ -15,9 +15,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import psycopg2
 from bson import BSON, Decimal128, json_util
-from pymongo import MongoClient
 from pymongo.errors import OperationFailure
 
 from scripts.sync_analytics import (
@@ -27,7 +25,8 @@ from scripts.sync_analytics import (
 from scripts.sync_mongodb import (
     COLLECTION_BUCKETS, COLLECTION_MONTHLY, COLLECTION_ROWS, COLLECTIONS,
     ENERGY_REGISTRY_QUERY, EPOCH, SYNC_ID, date_value, document_for,
-    measurement_buckets, mongo_compatible_query, required_env, stream_rows,
+    connect_production_postgres, measurement_buckets, mongo_compatible_query,
+    mongodb_client, stream_rows,
 )
 
 COLLECTION_STATE = "poc_sync_state"
@@ -222,7 +221,7 @@ def main() -> None:
     db_name = os.getenv("MONGODB_DATABASE", "ouros_analytics_poc")
     if not db_name.startswith("ouros_analytics_poc"):
         raise RuntimeError("Refusing to audit any database outside Mongo POC")
-    client = MongoClient(required_env("MONGODB_URI"), serverSelectionTimeoutMS=10000)
+    client = mongodb_client()
     source = None
     try:
         db = client[db_name]
@@ -251,7 +250,7 @@ def main() -> None:
 
         run_id = state["run_id"]
         last_sync = state["last_sync"]
-        source = psycopg2.connect(required_env("PRODUCTION_DATABASE_URL"))
+        source = connect_production_postgres()
         source.set_session(isolation_level="REPEATABLE READ", readonly=True, autocommit=False)
         with source.cursor() as cursor:
             cursor.execute("SELECT current_database()")
