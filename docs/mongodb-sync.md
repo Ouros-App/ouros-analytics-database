@@ -27,8 +27,12 @@ certificado/hostname e CA de confiança. A URI MongoDB não pode conter opções
 `tlsInsecure=true`, `tlsAllowInvalidCertificates=true` ou
 `tlsAllowInvalidHostnames=true`.
 
-O sincronizador valida `current_database()=segundo_prod` e as tabelas
-`public.enterprises` e `public.farms` antes da leitura.
+A função `validate_source_database` no próprio `scripts/sync_mongodb.py`
+confirma `current_database()=segundo_prod` e a existência de
+`public.enterprises` e `public.farms` antes de qualquer escrita no Atlas,
+inclusive na execução local (`python -m scripts.sync_mongodb`). O GitHub
+Actions reutiliza a mesma função no preflight. Origem incorreta interrompe
+a sincronização sem alterar coleções nem o checkpoint.
 
 ## Consistência e custo
 
