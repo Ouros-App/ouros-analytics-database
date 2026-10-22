@@ -199,11 +199,11 @@ class MongoModelsTest(unittest.TestCase):
         ])
 
     def test_oversized_document_is_rejected(self):
+        source_rows = [(1, 42, 7, date(2026, 10, 1), 2)]
+        documents = sync_mongodb.measurement_buckets("energy", source_rows, "run")
         with patch.object(sync_mongodb, "MAX_BSON_BYTES", 10):
             with self.assertRaisesRegex(ValueError, "12 MiB"):
-                list(sync_mongodb.measurement_buckets(
-                    "energy", [(1, 42, 7, date(2026, 10, 1), 2)], "run",
-                ))
+                list(documents)
 
     def test_required_secrets_and_poc_database_guard(self):
         with patch.dict(os.environ, {}, clear=True):
