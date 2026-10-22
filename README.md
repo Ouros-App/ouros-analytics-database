@@ -1,105 +1,100 @@
-# ouros analytics database
+# Ouros Analytics · MongoDB Atlas
 
-Camada analítica PostgreSQL derivada do banco transacional de produção. O
-repositório mantém estruturas voltadas para leitura, dashboards e métricas;
-ele não replica o schema operacional.
+Camada analítica do Ouros baseada **exclusivamente em MongoDB Atlas**. O PostgreSQL
+Neon `segundo_prod` continua sendo a **origem transacional, somente leitura**.
+Este repositório **não gerencia, migra ou provisiona** um PostgreSQL analítico
+no homelab.
 
-## Estrutura
+## Arquitetura
 
-- `sql/`: schema analítico versionado
-- `scripts/apply_sql.py`: orquestrador local
-- `config.yaml`: ordem de execucao e configuracao
-- `.env.example`: variaveis sensiveis
-
-## Modelo analítico
-
-O arquivo `sql/analytics_schema.sql` cria o schema `analytics` com dimensões de
-empresas e fazendas, fatos de lotes, consumo mensal e leituras individuais de
-água, pagamentos, metas e feedback de dicas, além da view
-`analytics.v_farm_dashboard`.
-
-`sql/dashboard_read_models.sql` cria as views `analytics.dashboard_*`
-consumidas pelo serviço de telemetria e concede leitura ao role `analytics_ro`.
-`dashboard_sync_status` adapta o watermark existente: `sync_name` vira `dataset`
-e `last_sync` vira `last_success_at`; o sincronizador não registra um status por
-execução, então a coluna `status` da view é nula.
-
-### Origem e tratamento
-
-Foram utilizados `enterprises`, `addresses`, `farms`, `lots`,
-`water_registries`, `energy_registries`, `plans`, `enterprise_plans`,
-`payments`, `individual_goals`, `state_goals`, `regions_goals`,
-`farm_goals`, `state_goal_regions`, `tips`, `farms_tips`, `categories`,
-`tip_categories` e `reviews`.
-
-Os joins empresa-endereço-fazenda, empresa-plano-pagamento, fazenda-lote,
-fazenda-consumo e dica-categoria-avaliação são preparados no modelo analítico.
-Consumo é agregado por fazenda e mês; `losts` vira `lost_chickens`; tipos e
-status devem ser carregados como `lower(btrim(valor))`; percentuais, capacidade
-disponível, aves sobreviventes, custo unitário e CGI são calculados no banco.
-Água é padronizada em m³ e energia em kWh.
-
-Foram ignorados `farm_owners`, `company_employees` e `adms` por conterem
-credenciais, documentos, telefones e e-mails; `password`, `foto_url`, número
-da rua, CEP, comentários e textos de dicas também não entram no analytics.
-`chicken_left` e as tabelas de log foram ignoradas por duplicarem eventos
-operacionais sem uma dimensão temporal suficiente para análise.
-
-O carregamento deve inserir os dados já tratados diretamente nas tabelas
-`analytics.*`; a aplicação do schema não copia tabelas de produção nem expõe
-dados pessoais.
-
-## Acesso de serviços
-
-O role `analytics_ro` é criado para APIs, dashboards e ferramentas de análise.
-Ele possui apenas `USAGE` no schema `analytics` e `SELECT` nas tabelas e views,
-com transações somente leitura e sem privilégios administrativos. A senha não
-é versionada e deve ser configurada no ambiente de execução pelo gerenciador
-de secrets.
-
-O role `analytics_sync_rw` é provisionado fora deste repositório, mas suas
-permissões no schema analítico são versionadas aqui. Quando o role existe,
-`analytics_sync_writer_privileges.sql` garante `SELECT`, `INSERT`, `UPDATE`
-e `DELETE` nas tabelas `analytics.*`, permitindo UPSERTs e reconciliações de
-linhas removidas sem conceder privilégios administrativos.
-
-## Sincronização incremental
-
-O script `scripts/sync_analytics.py` lê a maior parte das entidades por
-`updated_at`, no intervalo entre o último watermark e o início da execução.
-Ele usa o role `analytics_sync_ro` na origem e uma credencial de escrita
-separada no destino, aplica joins/agregações/normalizações e grava com UPSERT.
-O watermark fica em `analytics.sync_state` e só é atualizado no mesmo commit
-dos dados; qualquer falha faz rollback e mantém o `last_sync` anterior.
-
-O contrato da origem exige acesso de leitura a todas as tabelas usadas pelos
-joins, inclusive `public.farms_tips`. A relação entre dica e fazenda é
-normalizada nessa tabela; `public.tips` não possui `id_farm`. Como
-`farms_tips` não possui `updated_at`, `fact_tip_feedback` é reconciliada a
-partir de um snapshot completo em cada ciclo: as linhas atuais são atualizadas
-por UPSERT e associações `(review_id, farm_id)` que não existem mais na origem
-são removidas do destino. Isso cobre tanto novas associações quanto remoções sem
-depender de um timestamp inexistente.
-
-`fact_water_registry` faz o primeiro preenchimento do histórico em lotes via
-cursor do servidor. Nos ciclos seguintes, sincroniza apenas leituras ou fazendas
-alteradas desde o watermark. As chaves atuais dos hidrômetros são conferidas a
-cada ciclo para remover leituras apagadas na origem, sem baixar todos os valores
-históricos para a aplicação.
-
-Configure `PRODUCTION_DATABASE_URL` e `ANALYTICS_SYNC_DATABASE_URL` no ambiente
-e execute:
-
-```bash
-python scripts/sync_analytics.py
+```text
+Neon PostgreSQL (segundo_prod, analytics_sync_ro)
+         | TLS verificado, SELECT, snapshot consistente
+         v
+GitHub Actions (MongoDB Analytics Sync, 17/47 min de cada hora UTC)
+         | reconciliação completa / IDs determinísticos
+         v
+MongoDB Atlas (ouros_analytics_poc*)
+         | documentos por dimensão/fato, mês e buckets de métricas
+         v
+Consumidores MongoDB (integração de telemetry em evolução)
 ```
 
-Para cron, por exemplo, use `*/5 * * * * cd /caminho/ouros-analytics-database &&
-python scripts/sync_analytics.py >> /var/log/ouros-analytics-sync.log 2>&1`.
+O nome `ouros_analytics_poc` e os prefixos de coleção `poc_*` foram
+**mantidos por compatibilidade** com os dados sincronizados e auditados.
+Renomeá-los requer migração e validação separadas.
 
-## Uso
+## Componentes
+
+- `scripts/source_queries.py`: contrato SQL **de leitura** do banco de produção.
+  Não cria tabelas, não insere dados nem executa migrations.
+- `scripts/sync_mongodb.py`: extrai dados operacionais, reconcilia documentos
+  em lote, atualiza checkpoints e trata exclusões/correções da origem.
+- `scripts/audit_mongodb_poc.py`: verifica idempotência, paridade com a origem
+  e consumo de espaço. Auditoria manual, não faz escrita no PostgreSQL.
+- `.github/workflows/mongodb-sync-poc.yml`: único workflow de sincronização
+  analítica, executado pelo GitHub Actions.
+- `.github/workflows/ci-cd.yml`: testes da camada Mongo, CodeQL e SonarCloud.
+
+### Coleções no Atlas
+
+| Coleção | Conteúdo |
+| --- | --- |
+| `poc_analytics_rows` | Empresas, fazendas, lotes, pagamentos, metas, feedback de dicas |
+| `poc_farm_monthly` | Histórico de consumo agregado por fazenda e mês |
+| `poc_metric_buckets` | Leituras de água e energia agrupadas por tipo/fazenda/mês |
+| `poc_sync_state` | Watermark, status e contabilização da última carga |
+
+## Sincronização automática
+
+No GitHub, em **Settings → Secrets and variables → Actions**, configure:
+
+| Tipo | Nome | Finalidade |
+| --- | --- | --- |
+| Secret | `PRODUCTION_DATABASE_URL` | URI somente leitura de `segundo_prod`, verificação TLS `verify-full` |
+| Secret | `MONGODB_URI` | Usuário Atlas limitado ao banco analítico, com TLS validado |
+| Variable | `MONGODB_DATABASE` | Opcional, por padrão `ouros_analytics_poc` |
+| Variable | `MONGO_SYNC_ENABLED` | `true` habilita a carga agendada/manual |
+
+A cada minuto **17 e 47 de cada hora UTC** o GitHub Actions executa os
+testes e, quando `MONGO_SYNC_ENABLED=true`, executa o sync. Também há o
+disparador manual `workflow_dispatch`. O evento `push` não inicia cargas de
+dados; os testes de PR e push rodam no workflow CI/CD separado.
+
+A sincronização não é CDC: o extrator faz **reconciliação completa** dos dados
+em cada ciclo. Ela foi validada na POC, mas deve ser revisitada conforme o
+volume crescer. Não há transação atômica entre várias coleções: o consumidor
+deve validar `poc_sync_state.status == "success"` e a idade do checkpoint.
+
+## Desenvolvimento
 
 ```bash
-pip install -r requirements.txt
-python scripts/apply_sql.py
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -p 'test_*mongodb*.py' -v
 ```
+
+Para executar o sync localmente, configure as três variáveis da tabela acima
+(com `MONGO_SYNC_ENABLED` dispensável para execução local) e execute:
+
+```bash
+python -m scripts.sync_mongodb
+```
+
+Veja [docs/mongodb-sync.md](docs/mongodb-sync.md) para detalhes operacionais,
+segurança, auditoria e procedimentos de desativação da camada anterior.
+
+## Migração do PostgreSQL analítico do homelab
+
+Este repositório deixa de versionar as migrations SQL, o sincronizador
+PostgreSQL → PostgreSQL e o pipeline de deploy do homelab. **A mudança no
+GitHub não apaga nem para** o banco, containers ou timers já existentes na
+máquina. Para encerrar os recursos legados, é necessária uma ação operacional
+separada, após conferir consumidores, backup e rollback.
+
+O `ms-telemetry-dashboard-service` ainda possui provider PostgreSQL Analytics;
+a migração desse consumidor para Atlas ocorre no repositório do serviço.
+Até lá, os dashboards de negócio podem ficar indisponíveis. O provider
+Prometheus e demais serviços do homelab permanecem fora do escopo.
+
+**Nenhum DROP DATABASE, DROP SCHEMA, TRUNCATE, Docker volume remove ou comando
+de desativação remota é executado por este repositório.**
