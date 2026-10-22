@@ -73,5 +73,42 @@ jobs:
             ouros_analytics_poc*) echo "POC database prefix verified" ;;
             *) echo "Refusing non-POC MongoDB database"; exit 1 ;;
           esac
+      - name: Validate source database before copying data
+        shell: bash
+        env:
+          EXPECTED_SOURCE_DATABASE: segundo_prod
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          expected = os.environ['EXPECTED_SOURCE_DATABASE']
+          connection = psycopg2.connect(os.environ['PRODUCTION_DATABASE_URL'])
+          try:
+              connection.set_session(readonly=True)
+              with connection.cursor() as cursor:
+                  cursor.execute(
+                      "SELECT current_database(), current_user, "
+                      "to_regclass('public.enterprises') IS NOT NULL, "
+                      "to_regclass('public.farms') IS NOT NULL"
+                  )
+                  database, role, enterprises, farms = cursor.fetchone()
+          finally:
+              connection.close()
+          print(
+              f'Connected PostgreSQL database={database}; role={role}; '
+              f'public.enterprises={enterprises}; public.farms={farms}',
+              flush=True,
+          )
+          if database != expected:
+              raise SystemExit(
+                  f'Wrong source DB: expected {expected}, got {database}. '
+                  'Update the PRODUCTION_DATABASE_URL repository secret.'
+              )
+          if not enterprises or not farms:
+              raise SystemExit(
+                  'Tables missing from expected database. Verify the Neon branch/endpoint.'
+              )
+          PY
       - name: Sync Postgres source to isolated Atlas POC collections
         run: python -m scripts.sync_mongodb
