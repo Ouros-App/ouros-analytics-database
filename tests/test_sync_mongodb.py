@@ -18,7 +18,7 @@ class EnforcedTransportTest(unittest.TestCase):
         ) as connect:
             sync_mongodb.connect_production_postgres()
         self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
-        self.assertEqual(connect.call_args.kwargs["sslrootcert"], "system")
+        self.assertEqual(connect.call_args.kwargs["sslrootcert"], "/etc/ssl/certs/ca-certificates.crt")
 
     def test_postgres_explicit_verify_full_uses_trusted_ca(self):
         with patch.dict(os.environ, {
@@ -30,7 +30,17 @@ class EnforcedTransportTest(unittest.TestCase):
         ) as connect:
             sync_mongodb.connect_production_postgres()
         self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
+        self.assertEqual(connect.call_args.kwargs["sslrootcert"], "/etc/ssl/certs/ca-certificates.crt")
+
+    def test_postgres_falls_back_to_system_when_no_ca_file_exists(self):
+        with patch.dict(os.environ, {
+            "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod",
+        }, clear=True), patch.object(sync_mongodb.os.path, "isfile", return_value=False), patch.object(
+            sync_mongodb.psycopg2, "connect", return_value=object(),
+        ) as connect:
+            sync_mongodb.connect_production_postgres()
         self.assertEqual(connect.call_args.kwargs["sslrootcert"], "system")
+        self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
 
     def test_postgres_explicit_ca_is_preserved(self):
         with patch.dict(os.environ, {
