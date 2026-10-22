@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from bson import BSON
+from bson import BSON, Decimal128
 from pymongo.errors import OperationFailure
 
 from scripts import audit_mongodb_poc as audit
@@ -122,8 +122,8 @@ class AuditScenariosTest(unittest.TestCase):
         self.db[audit.COLLECTION_MONTHLY] = Collection([
             {
                 "_id": "42:2026-10-01", "farm_id": 42, "month_start": self.month,
-                "water_metrics": {"monthly_total_m3": Decimal("3.5")},
-                "energy_metrics": {"monthly_total_kwh": Decimal("12.4")},
+                "water_metrics": {"monthly_total_m3": Decimal128("3.5")},
+                "energy_metrics": {"monthly_total_kwh": Decimal128("12.4")},
             }
         ])
 
