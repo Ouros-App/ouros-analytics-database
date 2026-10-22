@@ -222,29 +222,37 @@ class MongoModelsTest(unittest.TestCase):
 
 
 class FakeSourceCursor:
+    def __init__(self, source):
+        self.source = source
+        self.query = None
+
     def __enter__(self):
         return self
 
     def __exit__(self, *_args):
         return False
 
-    def execute(self, *_args):
-        pass
+    def execute(self, query, *_args):
+        self.query = query
 
     def fetchone(self):
+        if self.query and "current_database()" in self.query:
+            return self.source.identity
         return (datetime(2026, 10, 21, tzinfo=UTC),)
 
 
 class FakeSource:
-    def __init__(self):
+    def __init__(self, identity=("segundo_prod", True, True)):
+        self.identity = identity
         self.rolled_back = False
         self.committed = False
+        self.closed = False
 
     def set_session(self, **_kwargs):
         pass
 
     def cursor(self):
-        return FakeSourceCursor()
+        return FakeSourceCursor(self)
 
     def rollback(self):
         self.rolled_back = True
@@ -253,7 +261,7 @@ class FakeSource:
         self.committed = True
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class FakeState:
@@ -279,6 +287,33 @@ class FakeClient:
         pass
 
 
+class SourceIdentityValidationTest(unittest.TestCase):
+    def test_accepts_correct_neon_database_with_required_tables(self):
+        sync_mongodb.validate_source_database(FakeSource())
+
+    def test_rejects_wrong_neon_database(self):
+        with self.assertRaisesRegex(RuntimeError, "expected segundo_prod"):
+            sync_mongodb.validate_source_database(
+                FakeSource(identity=("neondb", True, True))
+            )
+
+    def test_rejects_missing_enterprises_table(self):
+        with self.assertRaisesRegex(RuntimeError, "missing public.enterprises"):
+            sync_mongodb.validate_source_database(
+                FakeSource(identity=("segundo_prod", False, True))
+            )
+
+    def test_rejects_missing_farms_table(self):
+        with self.assertRaisesRegex(RuntimeError, "public.farms"):
+            sync_mongodb.validate_source_database(
+                FakeSource(identity=("segundo_prod", True, False))
+            )
+
+    def test_rejects_missing_source_database_metadata(self):
+        with self.assertRaisesRegex(RuntimeError, "Could not verify"):
+            sync_mongodb.validate_source_database(FakeSource(identity=None))
+
+
 class MongoSyncLifecycleTest(unittest.TestCase):
     def test_failure_keeps_previous_checkpoint_and_reports_failure(self):
         state, source = FakeState(), FakeSource()
@@ -299,6 +334,31 @@ class MongoSyncLifecycleTest(unittest.TestCase):
         updates = [update["$set"] for _, update in state.operations]
         self.assertEqual([update["status"] for update in updates], ["running", "failed"])
         self.assertFalse(any("last_sync" in update for update in updates))
+
+    def test_main_rejects_invalid_source_before_atlas_writes(self):
+        for identity in (
+            ("neondb", True, True),
+            ("segundo_prod", False, True),
+            ("segundo_prod", True, False),
+        ):
+            with self.subTest(identity=identity):
+                state, source = FakeState(), FakeSource(identity=identity)
+                with patch.dict(os.environ, {
+                    "MONGODB_URI": "mongodb://example.invalid/",
+                    "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/",
+                }, clear=True), patch.object(
+                    sync_mongodb, "MongoClient", return_value=FakeClient(state),
+                ), patch.object(
+                    sync_mongodb.psycopg2, "connect", return_value=source,
+                ), patch.object(sync_mongodb, "sync_snapshot") as snapshot:
+                    with self.assertRaises(RuntimeError):
+                        sync_mongodb.main()
+                    snapshot.assert_not_called()
+
+                self.assertEqual(state.operations, [])
+                self.assertTrue(source.rolled_back)
+                self.assertFalse(source.committed)
+                self.assertTrue(source.closed)
 
     def test_success_advances_checkpoint_once(self):
         state, source = FakeState(), FakeSource()
