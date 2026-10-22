@@ -95,6 +95,13 @@ on the default branch.
 
 A branch push now performs **two consecutive syncs**, records business-content
 SHA-256 fingerprints after the first one, then compares them after the second.
+The audit CLI accepts only the action `snapshot` or `verify`, not a
+user-provided filesystem path. Both actions use a private, fixed baseline
+file (`/tmp/atlas-poc-baseline.json`) on the isolated Ubuntu GitHub runner,
+created with permissions `0600` and exclusive creation. Symlink following
+is disabled for reading and writing; the snapshot is not overwritten.
+This removes untrusted CLI file paths and avoids path traversal.
+
 The audit checks every SQL-derived document and both water/energy registry
 buckets against Atlas. It also independently recalculates farm/month water and
 energy totals from source registries, explains the zero-payment case by
