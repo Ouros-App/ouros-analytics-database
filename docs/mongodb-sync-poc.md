@@ -29,9 +29,11 @@ an efficient incremental sync for a large production dataset.
 
 The PostgreSQL source transaction uses REPEATABLE READ and read-only access.
 The MongoDB bulk writes are **not one atomic cross-collection transaction**.
-A failed run leaves `poc_sync_state.status=failed`; retrying is idempotent and
-the successful checkpoint is not advanced on failure. During a run, readers
-may observe partial POC data. Do not point telemetry at these collections.
+Failures after `poc_sync_state` is initialized set `status=failed`;
+configuration and MongoDB connection errors may occur before that state is
+available. Retrying is idempotent, and the successful checkpoint is not
+advanced on failure. During a run, readers may observe partial POC data.
+Do not point telemetry at these collections.
 
 ### Required configuration
 
@@ -39,8 +41,8 @@ In GitHub repo **Settings -> Secrets and variables -> Actions**:
 
 | Type | Name | Notes |
 | --- | --- | --- |
-| Secret | `PRODUCTION_DATABASE_URL` | Read-only credential for the source PostgreSQL DB, SSL/TLS enabled |
-| Secret | `MONGODB_URI` | Atlas DB user with minimum write permissions on the **POC** database |
+| Secret | `PRODUCTION_DATABASE_URL` | Read-only credential for the source PostgreSQL DB; TLS required (sslmode=require, verify-ca or verify-full) |
+| Secret | `MONGODB_URI` | Atlas DB user with minimum write permissions on the **POC** database; client enforces TLS |
 | Variable (optional) | `MONGODB_DATABASE` | Defaults to `ouros_analytics_poc`; must start with that prefix |
 | Variable | `MONGO_SYNC_POC_ENABLED` | Set to `true` to opt in to **branch-push** sync testing |
 | Variable | `MONGO_SYNC_ENABLED` | Set to `true` to opt in to manual/scheduled sync **after merge** |
