@@ -10,41 +10,114 @@ from scripts import sync_mongodb
 
 
 class EnforcedTransportTest(unittest.TestCase):
-    def test_postgres_requires_tls_when_uri_omits_sslmode(self):
+    def test_postgres_defaults_to_verify_full_with_system_ca(self):
         with patch.dict(os.environ, {
             "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod",
-        }), patch.object(sync_mongodb.psycopg2, "connect", return_value=object()) as connect:
+        }, clear=True), patch.object(
+            sync_mongodb.psycopg2, "connect", return_value=object(),
+        ) as connect:
             sync_mongodb.connect_production_postgres()
-            self.assertEqual(connect.call_args.kwargs["sslmode"], "require")
+        self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
+        self.assertEqual(connect.call_args.kwargs["sslrootcert"], "system")
 
-    def test_postgres_keeps_explicit_safe_sslmode(self):
+    def test_postgres_explicit_verify_full_uses_trusted_ca(self):
         with patch.dict(os.environ, {
-            "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod?sslmode=verify-full",
-        }), patch.object(sync_mongodb.psycopg2, "connect", return_value=object()) as connect:
+            "PRODUCTION_DATABASE_URL": (
+                "postgresql://example.invalid/segundo_prod?sslmode=verify-full"
+            ),
+        }, clear=True), patch.object(
+            sync_mongodb.psycopg2, "connect", return_value=object(),
+        ) as connect:
             sync_mongodb.connect_production_postgres()
-            self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
+        self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
+        self.assertEqual(connect.call_args.kwargs["sslrootcert"], "system")
 
-    def test_postgres_blocks_insecure_sslmode(self):
-        for mode in ("disable", "allow", "prefer"):
+    def test_postgres_explicit_ca_is_preserved(self):
+        with patch.dict(os.environ, {
+            "PRODUCTION_DATABASE_URL": (
+                "postgresql://example.invalid/segundo_prod?"
+                "sslmode=verify-full&sslrootcert=%2Ftmp%2Froot.pem"
+            ),
+        }, clear=True), patch.object(
+            sync_mongodb.psycopg2, "connect", return_value=object(),
+        ) as connect:
+            sync_mongodb.connect_production_postgres()
+        self.assertEqual(connect.call_args.kwargs, {"sslmode": "verify-full"})
+
+    def test_postgres_ca_environment_is_preserved(self):
+        with patch.dict(os.environ, {
+            "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod",
+            "PGSSLROOTCERT": "/tmp/test-trusted-ca.pem",
+        }, clear=True), patch.object(
+            sync_mongodb.psycopg2, "connect", return_value=object(),
+        ) as connect:
+            sync_mongodb.connect_production_postgres()
+        self.assertEqual(connect.call_args.kwargs, {"sslmode": "verify-full"})
+
+    def test_postgres_rejects_non_verified_ssl_modes(self):
+        for mode in ("disable", "allow", "prefer", "require", "verify-ca"):
             with self.subTest(mode=mode), patch.dict(os.environ, {
                 "PRODUCTION_DATABASE_URL": (
                     "postgresql://example.invalid/segundo_prod?sslmode=" + mode
                 ),
-            }), patch.object(sync_mongodb.psycopg2, "connect") as connect:
-                with self.assertRaisesRegex(RuntimeError, "must require PostgreSQL TLS"):
+            }, clear=True), patch.object(
+                sync_mongodb.psycopg2, "connect",
+            ) as connect:
+                with self.assertRaisesRegex(RuntimeError, "sslmode=verify-full"):
                     sync_mongodb.connect_production_postgres()
                 connect.assert_not_called()
 
     def test_mongo_clients_enforce_tls_even_for_standard_uri(self):
         with patch.dict(os.environ, {
             "MONGODB_URI": "mongodb://example.invalid:27017",
-        }), patch.object(sync_mongodb, "MongoClient", return_value=object()) as create:
+        }, clear=True), patch.object(
+            sync_mongodb, "MongoClient", return_value=object(),
+        ) as create:
             sync_mongodb.mongodb_client(retry_writes=True)
             self.assertTrue(create.call_args.kwargs["tls"])
             self.assertTrue(create.call_args.kwargs["retryWrites"])
             sync_mongodb.mongodb_client()
             self.assertTrue(create.call_args.kwargs["tls"])
             self.assertNotIn("retryWrites", create.call_args.kwargs)
+
+    def test_mongo_allows_explicit_secure_uri_options(self):
+        with patch.dict(os.environ, {
+            "MONGODB_URI": (
+                "mongodb+srv://example.invalid/?tlsInsecure=false"
+                "&tlsAllowInvalidHostnames=false&tls=true"
+            ),
+        }, clear=True), patch.object(
+            sync_mongodb, "MongoClient", return_value=object(),
+        ) as create:
+            sync_mongodb.mongodb_client()
+            create.assert_called_once()
+
+    def test_mongo_rejects_insecure_tls_uri_options(self):
+        unsafe_parameters = (
+            "tlsInsecure=true",
+            "tlsAllowInvalidCertificates=true",
+            "tlsAllowInvalidHostnames=true",
+            "TLSINSECURE=%74rue",
+            "tls=false",
+            "ssl=false",
+        )
+        for parameter in unsafe_parameters:
+            with self.subTest(parameter=parameter), patch.dict(os.environ, {
+                "MONGODB_URI": f"mongodb://example.invalid/?{parameter}",
+            }, clear=True), patch.object(sync_mongodb, "MongoClient") as create:
+                with self.assertRaisesRegex(RuntimeError, "MONGODB_URI"):
+                    sync_mongodb.mongodb_client()
+                create.assert_not_called()
+
+    def test_mongo_cannot_enable_unsafe_duplicate_option(self):
+        with patch.dict(os.environ, {
+            "MONGODB_URI": (
+                "mongodb://example.invalid/?tlsInsecure=false&tlsInsecure=true"
+            ),
+        }, clear=True), patch.object(sync_mongodb, "MongoClient") as create:
+            with self.assertRaisesRegex(RuntimeError, "insecure TLS"):
+                sync_mongodb.mongodb_client()
+            create.assert_not_called()
 
 
 class MongoModelsTest(unittest.TestCase):
