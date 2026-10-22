@@ -54,7 +54,7 @@ required, and scope the MongoDB user strictly to the POC database.
 
 1. Create the Atlas POC database user and configure the two repository secrets.
 2. Run unit tests on the branch:
-   `python -m pip install -r requirements.txt && python -m unittest discover -s tests -p 'test_sync_mongodb.py' -v`.
+   `python -m pip install -r requirements.txt && python -m unittest discover -s tests -p 'test_*mongodb*.py' -v`.
 3. For a local one-off run, set `PRODUCTION_DATABASE_URL`, `MONGODB_URI`
    and (optionally) `MONGODB_DATABASE`, then run
    `python -m scripts.sync_mongodb`.
