@@ -66,40 +66,19 @@ jobs:
           esac
       - name: Validate source database before copying data
         shell: bash
-        env:
-          EXPECTED_SOURCE_DATABASE: segundo_prod
         run: |
           python - <<'PY'
-          import os
-          from scripts.sync_mongodb import connect_production_postgres
+          from scripts.sync_mongodb import (
+              connect_production_postgres,
+              validate_source_database,
+          )
 
-          expected = os.environ['EXPECTED_SOURCE_DATABASE']
           connection = connect_production_postgres()
           try:
               connection.set_session(readonly=True)
-              with connection.cursor() as cursor:
-                  cursor.execute(
-                      "SELECT current_database(), current_user, "
-                      "to_regclass('public.enterprises') IS NOT NULL, "
-                      "to_regclass('public.farms') IS NOT NULL"
-                  )
-                  database, role, enterprises, farms = cursor.fetchone()
+              validate_source_database(connection)
           finally:
               connection.close()
-          print(
-              f'Connected PostgreSQL database={database}; role={role}; '
-              f'public.enterprises={enterprises}; public.farms={farms}',
-              flush=True,
-          )
-          if database != expected:
-              raise SystemExit(
-                  f'Wrong source DB: expected {expected}, got {database}. '
-                  'Update the PRODUCTION_DATABASE_URL repository secret.'
-              )
-          if not enterprises or not farms:
-              raise SystemExit(
-                  'Tables missing from expected database. Verify the Neon branch/endpoint.'
-              )
           PY
       - name: Sync read-only Neon source to Atlas analytics collections
         run: python -m scripts.sync_mongodb
