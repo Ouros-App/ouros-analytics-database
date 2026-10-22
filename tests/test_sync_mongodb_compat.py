@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.sync_analytics import STEPS
+from scripts.source_queries import STEPS
 from scripts.sync_mongodb import mongo_compatible_query
 
 
