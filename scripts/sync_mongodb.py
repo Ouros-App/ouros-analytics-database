@@ -16,6 +16,7 @@ from typing import Iterable
 
 import psycopg2
 from psycopg2.extensions import parse_dsn
+from urllib.parse import parse_qsl, urlsplit
 from bson import BSON, Decimal128
 from pymongo import MongoClient, ReplaceOne
 
@@ -53,24 +54,49 @@ def required_env(name: str) -> str:
     return value
 
 
-TLS_MODES = frozenset({"require", "verify-ca", "verify-full"})
+INSECURE_MONGODB_OPTIONS = frozenset({
+    "tlsinsecure",
+    "tlsallowinvalidcertificates",
+    "tlsallowinvalidhostnames",
+})
 
 
 def connect_production_postgres():
-    """Open the source connection with TLS; never fall back to plaintext."""
+    """Authenticate the PostgreSQL hostname against a trusted TLS certificate."""
     dsn = required_env("PRODUCTION_DATABASE_URL")
-    configured = parse_dsn(dsn).get("sslmode")
-    if configured is not None and configured not in TLS_MODES:
-        raise RuntimeError("PRODUCTION_DATABASE_URL must require PostgreSQL TLS")
-    return psycopg2.connect(dsn, sslmode=configured or "require")
+    options = parse_dsn(dsn)
+    configured = options.get("sslmode")
+    if configured is not None and configured != "verify-full":
+        raise RuntimeError(
+            "PRODUCTION_DATABASE_URL must use sslmode=verify-full "
+            "for server identity verification"
+        )
+
+    connection_args = {"sslmode": "verify-full"}
+    if not options.get("sslrootcert") and not os.getenv("PGSSLROOTCERT"):
+        # Trust the OS CA bundle, not an unauthenticated encrypted connection.
+        connection_args["sslrootcert"] = "system"
+    return psycopg2.connect(dsn, **connection_args)
 
 
 def mongodb_client(*, retry_writes: bool | None = None):
-    """Require TLS for mongodb:// and mongodb+srv:// URIs alike."""
+    """Require certificate and hostname validation for all MongoDB URI schemes."""
+    uri = required_env("MONGODB_URI")
+    if not uri.startswith(("mongodb://", "mongodb+srv://")):
+        raise RuntimeError("MONGODB_URI must use a MongoDB connection scheme")
+
+    for name, value in parse_qsl(urlsplit(uri).query, keep_blank_values=True):
+        option = name.casefold()
+        setting = value.casefold()
+        if option in INSECURE_MONGODB_OPTIONS and setting != "false":
+            raise RuntimeError(f"MONGODB_URI must not enable insecure TLS option: {name}")
+        if option in {"tls", "ssl"} and setting != "true":
+            raise RuntimeError("MONGODB_URI must not disable TLS")
+
     options = {"serverSelectionTimeoutMS": 10000, "tls": True}
     if retry_writes is not None:
         options["retryWrites"] = retry_writes
-    return MongoClient(required_env("MONGODB_URI"), **options)
+    return MongoClient(uri, **options)
 
 
 def bson_value(value):
