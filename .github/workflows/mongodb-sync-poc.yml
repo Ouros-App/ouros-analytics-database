@@ -1,0 +1,128 @@
+name: MongoDB Analytics Sync POC
+
+on:
+  push:
+    branches:
+      - experiment/mongodb-atlas-sync
+    paths:
+      - scripts/sync_mongodb.py
+      - scripts/sync_analytics.py
+      - scripts/audit_mongodb_poc.py
+      - tests/test_audit_mongodb_poc.py
+      - tests/test_audit_mongodb_scenarios.py
+      - tests/test_sync_mongodb.py
+      - tests/test_sync_mongodb_compat.py
+      - tests/test_sync_mongodb_store.py
+      - requirements.txt
+      - .github/workflows/mongodb-sync-poc.yml
+  workflow_dispatch:
+  schedule:
+    - cron: "17,47 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: analytics-mongodb-poc
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    name: mongo-poc-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test isolated MongoDB synchronization code
+        run: python -m unittest discover -s tests -p 'test_*mongodb*.py' -v
+
+  sync:
+    name: atlas-poc-sync
+    needs: tests
+    if: ${{ (github.event_name == 'push' && vars.MONGO_SYNC_POC_ENABLED == 'true') || (github.event_name != 'push' && vars.MONGO_SYNC_ENABLED == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      MONGODB_DATABASE: ${{ vars.MONGODB_DATABASE || 'ouros_analytics_poc' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Fail fast on missing secrets
+        shell: bash
+        run: |
+          test -n "$PRODUCTION_DATABASE_URL" || { echo "Missing PRODUCTION_DATABASE_URL secret"; exit 1; }
+          test -n "$MONGODB_URI" || { echo "Missing MONGODB_URI secret"; exit 1; }
+      - name: Guard Atlas POC database name
+        shell: bash
+        run: |
+          case "$MONGODB_DATABASE" in
+            ouros_analytics_poc*) echo "POC database prefix verified" ;;
+            *) echo "Refusing non-POC MongoDB database"; exit 1 ;;
+          esac
+      - name: Validate source database before copying data
+        shell: bash
+        env:
+          EXPECTED_SOURCE_DATABASE: segundo_prod
+        run: |
+          python - <<'PY'
+          import os
+          from scripts.sync_mongodb import connect_production_postgres
+
+          expected = os.environ['EXPECTED_SOURCE_DATABASE']
+          connection = connect_production_postgres()
+          try:
+              connection.set_session(readonly=True)
+              with connection.cursor() as cursor:
+                  cursor.execute(
+                      "SELECT current_database(), current_user, "
+                      "to_regclass('public.enterprises') IS NOT NULL, "
+                      "to_regclass('public.farms') IS NOT NULL"
+                  )
+                  database, role, enterprises, farms = cursor.fetchone()
+          finally:
+              connection.close()
+          print(
+              f'Connected PostgreSQL database={database}; role={role}; '
+              f'public.enterprises={enterprises}; public.farms={farms}',
+              flush=True,
+          )
+          if database != expected:
+              raise SystemExit(
+                  f'Wrong source DB: expected {expected}, got {database}. '
+                  'Update the PRODUCTION_DATABASE_URL repository secret.'
+              )
+          if not enterprises or not farms:
+              raise SystemExit(
+                  'Tables missing from expected database. Verify the Neon branch/endpoint.'
+              )
+          PY
+      - name: Sync Postgres source to isolated Atlas POC collections
+        run: python -m scripts.sync_mongodb
+      - name: Record first snapshot fingerprint
+        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
+        run: python -m scripts.audit_mongodb_poc snapshot
+      - name: Repeat sync to verify idempotence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
+        run: python -m scripts.sync_mongodb
+      - name: Audit Atlas against PostgreSQL and report storage
+        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
+        run: python -m scripts.audit_mongodb_poc verify
