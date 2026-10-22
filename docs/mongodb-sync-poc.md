@@ -97,8 +97,9 @@ A branch push now performs **two consecutive syncs**, records business-content
 SHA-256 fingerprints after the first one, then compares them after the second.
 The audit CLI accepts only the action `snapshot` or `verify`, not a
 user-provided filesystem path. Both actions use a private, fixed baseline
-file (`/tmp/atlas-poc-baseline.json`) on the isolated Ubuntu GitHub runner,
-created with permissions `0600` and exclusive creation. Symlink following
+file (`~/.ouros-analytics-poc-baseline.json`) in the runner's private home,
+not a publicly writable temp directory. It is created with permissions `0600`
+and exclusive creation. Symlink following
 is disabled for reading and writing; the snapshot is not overwritten.
 This removes untrusted CLI file paths and avoids path traversal.
 
