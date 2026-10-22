@@ -204,7 +204,7 @@ class AuditScenariosTest(unittest.TestCase):
             with patch.dict(os.environ, {
                 "MONGODB_URI": "mongodb://example.invalid/",
                 "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/",
-            }), patch.object(audit, "MongoClient", return_value=client), patch.object(
+            }), patch.object(audit, "mongodb_client", return_value=client), patch.object(
                 audit, "fingerprint", return_value=before,
             ), patch.object(
                 sys, "argv", ["audit", "snapshot", "--baseline", baseline]
@@ -214,10 +214,10 @@ class AuditScenariosTest(unittest.TestCase):
             with patch.dict(os.environ, {
                 "MONGODB_URI": "mongodb://example.invalid/",
                 "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/",
-            }), patch.object(audit, "MongoClient", return_value=client), patch.object(
+            }), patch.object(audit, "mongodb_client", return_value=client), patch.object(
                 audit, "fingerprint", return_value=before,
             ), patch.object(
-                audit.psycopg2, "connect", return_value=source,
+                audit, "connect_production_postgres", return_value=source,
             ), patch.object(
                 audit, "check_source_parity", return_value={"fact_payment": 0}
             ) as parity, patch.object(
@@ -249,7 +249,7 @@ class AuditScenariosTest(unittest.TestCase):
                 "poc_metric_buckets": {"count": 0, "sha256": "y"},
             }))
             with patch.dict(os.environ, {"MONGODB_URI": "mongodb://invalid"}), patch.object(
-                audit, "MongoClient", return_value=client
+                audit, "mongodb_client", return_value=client
             ), patch.object(
                 audit, "fingerprint", return_value={
                     "poc_analytics_rows": {"count": 2, "sha256": "changed"}
