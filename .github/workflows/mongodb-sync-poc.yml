@@ -119,10 +119,10 @@ jobs:
         run: python -m scripts.sync_mongodb
       - name: Record first snapshot fingerprint
         if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
-        run: python -m scripts.audit_mongodb_poc snapshot --baseline /tmp/atlas-poc-baseline.json
+        run: python -m scripts.audit_mongodb_poc snapshot
       - name: Repeat sync to verify idempotence
         if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
         run: python -m scripts.sync_mongodb
       - name: Audit Atlas against PostgreSQL and report storage
         if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
-        run: python -m scripts.audit_mongodb_poc verify --baseline /tmp/atlas-poc-baseline.json
+        run: python -m scripts.audit_mongodb_poc verify
