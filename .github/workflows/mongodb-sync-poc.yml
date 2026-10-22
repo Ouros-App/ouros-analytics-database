@@ -8,6 +8,7 @@ on:
       - scripts/sync_mongodb.py
       - scripts/audit_mongodb_poc.py
       - tests/test_audit_mongodb_poc.py
+      - tests/test_audit_mongodb_scenarios.py
       - tests/test_sync_mongodb.py
       - tests/test_sync_mongodb_store.py
       - requirements.txt
