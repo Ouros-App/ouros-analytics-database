@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import os
-from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -64,7 +63,8 @@ def compare_documents(db, collection_name: str, filter_by: dict,
     expected = {}
     count = 0
     for original in source_documents:
-        row = without_run(original)
+        # Normalize SQL dates through BSON (millisecond precision, naive UTC).
+        row = without_run(BSON(BSON.encode(original)).decode())
         identifier = row["_id"]
         if identifier in expected:
             raise AssertionError(f"{label}: duplicate source document identifier")
