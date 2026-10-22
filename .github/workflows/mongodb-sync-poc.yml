@@ -1,20 +1,6 @@
-name: MongoDB Analytics Sync POC
+name: MongoDB Analytics Sync
 
 on:
-  push:
-    branches:
-      - experiment/mongodb-atlas-sync
-    paths:
-      - scripts/sync_mongodb.py
-      - scripts/sync_analytics.py
-      - scripts/audit_mongodb_poc.py
-      - tests/test_audit_mongodb_poc.py
-      - tests/test_audit_mongodb_scenarios.py
-      - tests/test_sync_mongodb.py
-      - tests/test_sync_mongodb_compat.py
-      - tests/test_sync_mongodb_store.py
-      - requirements.txt
-      - .github/workflows/mongodb-sync-poc.yml
   workflow_dispatch:
   schedule:
     - cron: "17,47 * * * *"
@@ -23,12 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: analytics-mongodb-poc
+  group: analytics-mongodb
   cancel-in-progress: false
 
 jobs:
   tests:
-    name: mongo-poc-tests
+    name: mongo-sync-tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -46,9 +32,9 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*mongodb*.py' -v
 
   sync:
-    name: atlas-poc-sync
+    name: atlas-sync
     needs: tests
-    if: ${{ (github.event_name == 'push' && vars.MONGO_SYNC_POC_ENABLED == 'true') || (github.event_name != 'push' && vars.MONGO_SYNC_ENABLED == 'true') }}
+    if: ${{ vars.MONGO_SYNC_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -71,12 +57,12 @@ jobs:
         run: |
           test -n "$PRODUCTION_DATABASE_URL" || { echo "Missing PRODUCTION_DATABASE_URL secret"; exit 1; }
           test -n "$MONGODB_URI" || { echo "Missing MONGODB_URI secret"; exit 1; }
-      - name: Guard Atlas POC database name
+      - name: Guard isolated Atlas analytics database
         shell: bash
         run: |
           case "$MONGODB_DATABASE" in
-            ouros_analytics_poc*) echo "POC database prefix verified" ;;
-            *) echo "Refusing non-POC MongoDB database"; exit 1 ;;
+            ouros_analytics_poc*) echo "Analytics database prefix verified" ;;
+            *) echo "Refusing non-analytics MongoDB database"; exit 1 ;;
           esac
       - name: Validate source database before copying data
         shell: bash
@@ -115,14 +101,5 @@ jobs:
                   'Tables missing from expected database. Verify the Neon branch/endpoint.'
               )
           PY
-      - name: Sync Postgres source to isolated Atlas POC collections
+      - name: Sync read-only Neon source to Atlas analytics collections
         run: python -m scripts.sync_mongodb
-      - name: Record first snapshot fingerprint
-        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
-        run: python -m scripts.audit_mongodb_poc snapshot
-      - name: Repeat sync to verify idempotence
-        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
-        run: python -m scripts.sync_mongodb
-      - name: Audit Atlas against PostgreSQL and report storage
-        if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/mongodb-atlas-sync'
-        run: python -m scripts.audit_mongodb_poc verify
