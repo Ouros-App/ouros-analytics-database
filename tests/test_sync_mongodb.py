@@ -9,6 +9,44 @@ from bson import Decimal128
 from scripts import sync_mongodb
 
 
+class EnforcedTransportTest(unittest.TestCase):
+    def test_postgres_requires_tls_when_uri_omits_sslmode(self):
+        with patch.dict(os.environ, {
+            "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod",
+        }), patch.object(sync_mongodb.psycopg2, "connect", return_value=object()) as connect:
+            sync_mongodb.connect_production_postgres()
+            self.assertEqual(connect.call_args.kwargs["sslmode"], "require")
+
+    def test_postgres_keeps_explicit_safe_sslmode(self):
+        with patch.dict(os.environ, {
+            "PRODUCTION_DATABASE_URL": "postgresql://example.invalid/segundo_prod?sslmode=verify-full",
+        }), patch.object(sync_mongodb.psycopg2, "connect", return_value=object()) as connect:
+            sync_mongodb.connect_production_postgres()
+            self.assertEqual(connect.call_args.kwargs["sslmode"], "verify-full")
+
+    def test_postgres_blocks_insecure_sslmode(self):
+        for mode in ("disable", "allow", "prefer"):
+            with self.subTest(mode=mode), patch.dict(os.environ, {
+                "PRODUCTION_DATABASE_URL": (
+                    "postgresql://example.invalid/segundo_prod?sslmode=" + mode
+                ),
+            }), patch.object(sync_mongodb.psycopg2, "connect") as connect:
+                with self.assertRaisesRegex(RuntimeError, "must require PostgreSQL TLS"):
+                    sync_mongodb.connect_production_postgres()
+                connect.assert_not_called()
+
+    def test_mongo_clients_enforce_tls_even_for_standard_uri(self):
+        with patch.dict(os.environ, {
+            "MONGODB_URI": "mongodb://example.invalid:27017",
+        }), patch.object(sync_mongodb, "MongoClient", return_value=object()) as create:
+            sync_mongodb.mongodb_client(retry_writes=True)
+            self.assertTrue(create.call_args.kwargs["tls"])
+            self.assertTrue(create.call_args.kwargs["retryWrites"])
+            sync_mongodb.mongodb_client()
+            self.assertTrue(create.call_args.kwargs["tls"])
+            self.assertNotIn("retryWrites", create.call_args.kwargs)
+
+
 class MongoModelsTest(unittest.TestCase):
     def test_document_keys_and_decimal_are_stable(self):
         doc = sync_mongodb.document_for(
